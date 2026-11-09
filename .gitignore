@@ -1,0 +1,30 @@
+# ---- Private data: never commit ----
+# Each person's pipeline (clients, contacts, calls, emails, notes) lives only on their own Mac.
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+backups/
+*.csv
+
+# Secrets (API keys, app passwords). Use .env.example as the template.
+.env
+.env.*
+!.env.example
+
+# Runtime files
+tracker.log
+*.log
+.tracker.pid
+__pycache__/
+*.pyc
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Personal Claude Code settings (the shared daily-summary skill is still included)
+.claude/settings.local.json

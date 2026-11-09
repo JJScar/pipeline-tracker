@@ -1,0 +1,1501 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pipeline Tracker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* Corgi palette (from corgi.insure): orange #FF5C00, near-black #191919, off-white #F6F6F6, grey lines #E1E1E1 */
+:root {
+  --bg: #f6f6f6; --panel: #ffffff; --ink: #191919; --muted: #6b6b6b; --line: #e1e1e1;
+  --accent: #ff5c00; --accent-hover: #ff7d33; --accent-active: #ff9d66; --accent-soft: #fff2eb; --accent-tint: #ffdecc;
+  --accent-text: #b84300;  /* orange that stays readable as text on white */
+  --danger: #d4183d; --danger-soft: #ffe8ec; --warn: #9a5b00; --warn-soft: #fff4d6; --ok: #137a3f; --ok-soft: #e3f6ea;
+  /* Stages: grey → light orange → Corgi orange → deep orange → green (won) → light grey (lost) */
+  --s-lead: #4a4a4a; --s-info_sent: #ff9d66; --s-submission: #ff5c00; --s-quoted: #b84300; --s-active: #1f9d55; --s-lost: #bdbdbd;
+  --shadow: 0 1px 2px rgba(25,25,25,.05), 0 1px 3px rgba(25,25,25,.07);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111111; --panel: #1d1d1d; --ink: #f6f6f6; --muted: #9e9e9e; --line: #2c2c2c;
+    --accent: #ff5c00; --accent-hover: #ff7d33; --accent-active: #ff9d66; --accent-soft: #33190a; --accent-tint: #4a230c;
+    --accent-text: #ff8a4c;
+    --danger: #ff5c77; --danger-soft: #3b1219; --warn: #ffc24d; --warn-soft: #3a2a0c; --ok: #4cd18a; --ok-soft: #0f2e1f;
+    --s-lead: #9e9e9e; --s-lost: #585858;
+    --shadow: 0 1px 2px rgba(0,0,0,.5);
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: -.005em; }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+header { position: sticky; top: 0; z-index: 10; background: var(--panel); border-bottom: 1px solid var(--line); padding: 12px 20px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+header h1 { font-size: 16px; margin: 0 12px 0 0; font-weight: 650; letter-spacing: -.01em; }
+.tabs { display: flex; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
+.tabs button { border: 0; background: none; padding: 5px 12px; border-radius: 6px; color: var(--muted); }
+.tabs button.on { background: var(--panel); color: var(--ink); box-shadow: var(--shadow); font-weight: 600; }
+.tabs .count { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 4px; border-radius: 9px; background: var(--danger); color: #fff; font-size: 11px; font-weight: 600; }
+.spacer { flex: 1; }
+input[type=search] { border: 1px solid var(--line); background: var(--bg); border-radius: 8px; padding: 6px 10px; width: 220px; }
+.btn { border: 1px solid var(--line); background: var(--panel); padding: 6px 12px; border-radius: 8px; }
+.btn:hover { border-color: var(--muted); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.btn.danger { color: var(--danger); }
+.btn.sm { padding: 3px 8px; font-size: 12px; }
+main { padding: 16px 20px 40px; }
+
+.stats { display: grid; grid-template-columns: repeat(6, minmax(0,1fr)); gap: 10px; margin-bottom: 16px; }
+.stat { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; cursor: pointer; border-top: 3px solid var(--c, var(--line)); }
+.stat .n { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.stat .l { color: var(--muted); font-size: 12px; }
+
+.board { display: grid; grid-template-columns: repeat(var(--cols,5), minmax(220px, 1fr)); gap: 12px; overflow-x: auto; align-items: start; }
+.col { background: color-mix(in srgb, var(--panel) 60%, var(--bg)); border: 1px solid var(--line); border-radius: 10px; min-height: 200px; display: flex; flex-direction: column; }
+.col.drop { outline: 2px dashed var(--accent); outline-offset: -2px; }
+.col-h { padding: 10px 12px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--line); }
+.col-h .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--c); }
+.col-h b { font-size: 13px; }
+.col-h .sub { color: var(--muted); font-size: 11px; display: block; font-weight: 400; }
+.col-h .n { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+.cards { padding: 8px; display: flex; flex-direction: column; gap: 8px; flex: 1; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; box-shadow: var(--shadow); cursor: pointer; border-left: 3px solid var(--c); }
+.card:hover { border-color: var(--muted); border-left-color: var(--c); }
+.card.dragging { opacity: .4; }
+.card .a { font-weight: 600; }
+.card .m { color: var(--muted); font-size: 12px; }
+.card .tags { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 6px; }
+.tag { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--bg); color: var(--muted); border: 1px solid var(--line); white-space: nowrap; }
+.tag.over { background: var(--danger-soft); color: var(--danger); border-color: transparent; font-weight: 600; }
+.tag.today { background: var(--warn-soft); color: var(--warn); border-color: transparent; font-weight: 600; }
+.tag.soon { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+.tag.stale { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+.tag.money { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
+.tag.link { color: var(--accent); background: var(--accent-soft); border-color: transparent; text-decoration: none; font-weight: 600; }
+.tag.link:hover { text-decoration: underline; }
+.tag.call { font-variant-numeric: tabular-nums; font-weight: 600; border-color: transparent; }
+.tag.call::before { content: "●"; margin-right: 4px; font-size: 9px; vertical-align: 1px; }
+.tag.call.go { background: var(--ok-soft); color: var(--ok); }
+.tag.call.wait { background: var(--warn-soft); color: var(--warn); }
+.tag.call.no { background: var(--bg); color: var(--muted); border-color: var(--line); font-weight: 400; }
+.linkrow { display: flex; gap: 6px; align-items: center; }
+.linkrow input { flex: 1; min-width: 0; }
+.linkrow .btn { text-decoration: none; white-space: nowrap; }
+.empty { color: var(--muted); font-size: 12px; text-align: center; padding: 16px 8px; }
+
+table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 12px; color: var(--muted); font-weight: 600; cursor: pointer; user-select: none; background: var(--bg); }
+tr.row { cursor: pointer; }
+tr.row:hover td { background: var(--accent-soft); }
+.pill { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; }
+.pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--c); }
+
+.today-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; }
+.box { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+.box h3 { margin: 0; padding: 10px 14px; font-size: 13px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; }
+.box h3 small { color: var(--muted); font-weight: 400; }
+.item { padding: 9px 14px; border-bottom: 1px solid var(--line); display: flex; gap: 10px; align-items: center; cursor: pointer; }
+.item:last-child { border-bottom: 0; }
+.item.dragging, .box.dragging { opacity: .35; }
+.box h3 .grip { color: var(--muted); opacity: .45; margin-right: 6px; cursor: grab; letter-spacing: -2px; }
+.box h3:hover .grip { opacity: 1; }
+.box[data-box] h3 { cursor: grab; }
+.item:hover { background: var(--accent-soft); }
+.item .grow { flex: 1; min-width: 0; }
+.item .m { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Drawer */
+.scrim { position: fixed; inset: 0; background: rgba(15,17,21,.35); display: none; z-index: 20; }
+.scrim.on { display: block; }
+.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(560px, 100vw); background: var(--panel); border-left: 1px solid var(--line); z-index: 21; transform: translateX(100%); transition: transform .18s ease; display: flex; flex-direction: column; }
+.drawer.on { transform: none; }
+.d-head { padding: 14px 18px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 10px; }
+.d-head h2 { margin: 0; font-size: 16px; flex: 1; }
+.d-body { padding: 16px 18px; overflow-y: auto; flex: 1; }
+.stepper { display: flex; gap: 4px; margin-bottom: 14px; }
+.stepper button { flex: 1; border: 1px solid var(--line); background: var(--bg); border-radius: 6px; padding: 6px 2px; font-size: 11px; color: var(--muted); }
+.stepper button.on { background: var(--c); border-color: var(--c); color: #fff; font-weight: 600; }
+.stepper button.past { color: var(--ink); border-color: var(--c); }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; }
+.field { display: flex; flex-direction: column; gap: 3px; }
+.field.full { grid-column: 1 / -1; }
+.field label { font-size: 11px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
+.field input, .field select, .field textarea { border: 1px solid var(--line); background: var(--bg); border-radius: 7px; padding: 7px 9px; width: 100%; }
+.field textarea { resize: vertical; min-height: 64px; }
+.quick { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
+.section-t { font-size: 12px; font-weight: 650; margin: 20px 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.logbox { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: var(--bg); }
+.logbox textarea { width: 100%; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); padding: 7px 9px; min-height: 54px; resize: vertical; }
+.logbox .row2 { display: flex; gap: 6px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
+.logbox select { border: 1px solid var(--line); border-radius: 6px; background: var(--panel); padding: 4px 6px; }
+.timeline { list-style: none; margin: 10px 0 0; padding: 0; }
+.timeline li { padding: 8px 0 8px 22px; border-bottom: 1px solid var(--line); position: relative; }
+.timeline li::before { content: attr(data-i); position: absolute; left: 0; top: 8px; font-size: 13px; }
+.timeline .t { color: var(--muted); font-size: 11px; display: flex; justify-content: space-between; }
+.timeline .t button { border: 0; background: none; color: var(--muted); font-size: 11px; padding: 0 0 0 8px; visibility: hidden; }
+.timeline .t button:hover { color: var(--ink); text-decoration: underline; }
+.timeline .t button[data-edit] { color: var(--accent); }
+.timeline .editing textarea { width: 100%; border: 1px solid var(--accent); border-radius: 6px; background: var(--panel); padding: 6px 8px; min-height: 54px; resize: vertical; margin-top: 4px; }
+.timeline .editing .row2 { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
+.timeline .editing select { border: 1px solid var(--line); border-radius: 6px; background: var(--panel); padding: 3px 6px; }
+.timeline li:hover .t button { visibility: visible; }
+.timeline .b { white-space: pre-wrap; }
+.d-foot { padding: 12px 18px; border-top: 1px solid var(--line); display: flex; gap: 8px; }
+.toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 30; }
+.toast.on { opacity: 1; }
+.hint { color: var(--muted); font-size: 12px; }
+/* Dial counter */
+.counter { display: flex; align-items: center; gap: 2px; border: 1px solid var(--line); border-radius: 8px; padding: 2px 4px 2px 10px; background: var(--bg); }
+.counter .lbl { font-size: 11px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .03em; margin-right: 6px; }
+.counter { padding: 2px 8px 2px 10px; cursor: text; }
+.counter input { width: 56px; border: 1px solid transparent; background: var(--panel); border-radius: 6px; padding: 3px 6px; font-weight: 650; font-variant-numeric: tabular-nums; text-align: right; -moz-appearance: textfield; }
+.counter input::-webkit-outer-spin-button, .counter input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.counter input:focus { outline: none; border-color: var(--accent); }
+.counter input.saved { border-color: var(--ok); }
+.counter .goal { color: var(--muted); font-size: 12px; margin-left: 3px; font-variant-numeric: tabular-nums; }
+.goalbar { width: 40px; height: 4px; border-radius: 2px; background: var(--accent-soft); overflow: hidden; margin-right: 4px; }
+.goalbar i { display: block; height: 100%; background: var(--accent); }
+
+/* Stats view */
+.toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+.toolbar select, .toolbar input { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 6px 10px; }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.kpi { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+.kpi .l { color: var(--muted); font-size: 12px; }
+.kpi .n { font-size: 24px; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+.kpi .d { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.kpi .d.up { color: var(--ok); } .kpi .d.down { color: var(--danger); }
+.funnel { display: flex; align-items: stretch; gap: 0; overflow-x: auto; padding: 4px 14px 14px; }
+.fstep { flex: 1; min-width: 104px; text-align: center; padding: 10px 6px; border-radius: 8px; background: var(--bg); }
+.fstep .n { font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.fstep .l { font-size: 12px; color: var(--muted); }
+.farrow { display: flex; flex-direction: column; justify-content: center; align-items: center; min-width: 54px; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.farrow span { color: var(--muted); font-weight: 400; font-size: 16px; line-height: 1; }
+.stats-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 14px; margin-bottom: 14px; }
+.chart-wrap { padding: 10px 14px 14px; position: relative; }
+.chart-wrap svg { display: block; width: 100%; height: 220px; overflow: visible; }
+.chart-wrap .grid { stroke: var(--line); stroke-width: 1; }
+.chart-wrap .axis { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.chart-wrap .bar { fill: var(--accent); }
+.chart-wrap .hit { fill: transparent; cursor: default; }
+.chart-wrap .hit:hover + .bar, .chart-wrap .bar.hl { fill: color-mix(in srgb, var(--accent) 75%, var(--ink)); }
+.tip { position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--line); box-shadow: 0 4px 12px rgba(0,0,0,.12); border-radius: 8px; padding: 7px 10px; font-size: 12px; white-space: nowrap; display: none; z-index: 5; }
+.tip b { display: block; margin-bottom: 2px; }
+.seg { display: flex; background: var(--bg); border: 1px solid var(--line); border-radius: 7px; padding: 2px; }
+.seg button { border: 0; background: none; padding: 3px 8px; border-radius: 5px; font-size: 12px; color: var(--muted); }
+.seg button.on { background: var(--panel); color: var(--ink); font-weight: 600; box-shadow: var(--shadow); }
+.vel { padding: 4px 14px 12px; }
+.vel div { display: flex; justify-content: space-between; padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.vel div:last-child { border-bottom: 0; }
+.vel b { font-variant-numeric: tabular-nums; }
+table.daily td, table.daily th { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+table.daily td:first-child, table.daily th:first-child { text-align: left; }
+table.daily input { width: 64px; text-align: right; border: 1px solid transparent; background: transparent; border-radius: 5px; padding: 2px 4px; font-variant-numeric: tabular-nums; }
+table.daily input:hover, table.daily input:focus { border-color: var(--line); background: var(--bg); }
+table.daily tr.total td { font-weight: 650; background: var(--bg); }
+table.daily .z { color: var(--muted); opacity: .5; }
+@media (max-width: 900px) { .stats-grid { grid-template-columns: 1fr; } }
+@media (max-width: 900px) { .stats { grid-template-columns: repeat(3, 1fr); } input[type=search] { width: 100%; } }
+.review { border-color: var(--warn); grid-column: 1 / -1; }
+.review .item { cursor: default; align-items: flex-start; }
+.review .item:hover { background: transparent; }
+.review .acts { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; justify-content: flex-end; }
+.review select { font-size: 12px; padding: 2px 4px; border-radius: 6px; border: 1px solid var(--line); max-width: 190px; }
+.review .item { flex-wrap: wrap; }
+/* To-dos pop-up (centered, above the agency drawer) */
+.m-scrim { position: fixed; inset: 0; background: rgba(15,17,21,.45); display: none; z-index: 25; }
+.m-scrim.on { display: block; }
+.modal { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -48%) scale(.98); opacity: 0; pointer-events: none; transition: opacity .15s, transform .15s;
+  width: min(640px, calc(100vw - 32px)); max-height: calc(100vh - 64px); background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: 0 20px 50px rgba(0,0,0,.25); z-index: 26; display: flex; flex-direction: column; }
+.modal.on { opacity: 1; pointer-events: auto; transform: translate(-50%, -50%); }
+.modal .m-body { padding: 14px 18px 18px; overflow-y: auto; }
+#todoBtn .count { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 4px; border-radius: 9px; background: var(--muted); color: #fff; font-size: 11px; font-weight: 600; }
+#todoBtn .count.hot { background: var(--danger); }
+/* To-dos */
+.todo-list { display: flex; flex-direction: column; gap: 6px; }
+.todo { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; display: flex; gap: 9px; align-items: flex-start; background: var(--panel); }
+.todo.blocked { border-left: 3px solid var(--danger); }
+.todo.done { opacity: .55; }
+.todo.done .tt { text-decoration: line-through; }
+.todo input[type=checkbox] { margin-top: 3px; width: 15px; height: 15px; cursor: pointer; accent-color: var(--ok); flex: none; }
+.todo .grow { flex: 1; min-width: 0; }
+.todo .tt { font-weight: 600; }
+.todo .who { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.todo .blk { font-size: 12px; color: var(--danger); margin-top: 2px; }
+.todo .acts { display: flex; gap: 4px; align-items: center; flex: none; }
+.todo .acts button { border: 0; background: none; color: var(--muted); font-size: 11px; padding: 0 2px; visibility: hidden; }
+.todo:hover .acts button { visibility: visible; }
+.todo .acts button:hover { color: var(--ink); text-decoration: underline; }
+.todo-form { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: var(--bg); display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; }
+.todo-form .full { grid-column: 1 / -1; }
+.todo-form input { width: 100%; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); padding: 6px 8px; }
+.todo-form label { font-size: 11px; color: var(--muted); font-weight: 600; display: block; margin-bottom: 2px; }
+.todo-form .quick { margin-top: 3px; }
+.todo-form .row2 { grid-column: 1 / -1; display: flex; gap: 6px; align-items: center; }
+.todo-more { grid-column: 1 / -1; display: contents; }
+.todo-more[hidden] { display: none; }
+.item .todo-chk { margin: 0; width: 15px; height: 15px; accent-color: var(--ok); cursor: pointer; flex: none; }
+.tag.blocked { background: var(--danger-soft); color: var(--danger); border-color: transparent; font-weight: 600; }
+.tx { flex-basis: 100%; margin: 4px 0 2px 17px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); padding: 10px 12px; max-height: 340px; overflow-y: auto; cursor: auto; }
+.tx .player { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; position: sticky; top: -10px; background: var(--bg); padding: 4px 0; }
+.tx .player input { flex: 1; }
+.tx .player span { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 80px; text-align: right; }
+.tx .turn { display: flex; gap: 8px; padding: 4px 0; font-size: 13px; }
+.tx .turn .who { flex: 0 0 64px; font-size: 11px; font-weight: 650; color: var(--muted); padding-top: 2px; cursor: pointer; }
+.tx .turn.me .who { color: var(--accent); }
+.tx .turn .who:hover { text-decoration: underline; }
+.sync { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.sync.err { color: var(--danger); font-weight: 600; }
+
+/* ---------- Corgi brand touches ---------- */
+header { border-bottom: 1px solid var(--line); }
+header h1 { display: flex; align-items: center; gap: 8px; font-weight: 700; letter-spacing: -.02em; }
+header h1::before { content: ""; width: 10px; height: 10px; border-radius: 3px; background: var(--accent); }
+.tabs button.on { background: var(--ink); color: var(--panel); box-shadow: none; }
+.tabs .count { background: var(--accent); }
+.tabs button.on .count { background: var(--accent); color: #fff; }
+.btn { border-radius: 8px; transition: background .12s, border-color .12s; }
+.btn:hover { border-color: var(--ink); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.btn.primary:active { background: var(--accent-active); border-color: var(--accent-active); }
+input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.field input:focus, .field select:focus, .field textarea:focus, .todo-form input:focus, .logbox textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.tag.soon, .tag.link { color: var(--accent-text); background: var(--accent-soft); }
+.timeline .t button[data-edit], .tx .turn.me .who { color: var(--accent-text); }
+tr.row:hover td, .item:hover { background: var(--accent-soft); }
+.review .item:hover { background: transparent; }
+.stat { border-top-width: 3px; }
+.stat:hover, .card:hover { border-color: var(--ink); border-left-color: var(--c); }
+.stepper button.on { color: #fff; }
+.stepper button.on[data-s="info_sent"], .stepper button.on[data-s="lost"] { color: #191919; }
+.seg button.on { background: var(--ink); color: var(--panel); box-shadow: none; }
+.goalbar { background: var(--accent-tint); }
+#todoBtn .count.hot { background: var(--accent); }
+.todo input[type=checkbox], .item .todo-chk { accent-color: var(--accent); }
+::selection { background: var(--accent-tint); }
+a.btn { color: var(--ink); text-decoration: none; display: inline-flex; align-items: center; }
+a.btn:hover { color: var(--accent-text); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Pipeline Tracker</h1>
+  <div class="tabs" id="tabs">
+    <button data-v="today">Follow-ups <span class="count" id="todayCount" hidden></span></button>
+    <button data-v="board">Board</button>
+    <button data-v="list">List</button>
+    <button data-v="stats">Stats</button>
+  </div>
+  <label class="counter" title="Today's dials. Type the number and press Enter">
+    <span class="lbl">Dials</span><span class="goalbar" id="goalbar" hidden><i></i></span>
+    <input type="number" min="0" inputmode="numeric" id="dialIn" data-c="dials" value="0" aria-label="Dials today">
+    <span class="goal" id="goalTxt"></span>
+  </label>
+  <label class="counter" title="Today's connects (real conversations). Type the number and press Enter">
+    <span class="lbl">Connects</span>
+    <input type="number" min="0" inputmode="numeric" id="connIn" data-c="connects" value="0" aria-label="Connects today">
+  </label>
+  <button class="btn sm sync" id="syncBtn" hidden title="Calls sync from Trellus every 5 minutes. Click to sync now.">Trellus</button>
+  <button class="btn sm sync" id="mailBtn" hidden title="Emails with your agencies sync every 5 minutes. Click to sync now.">Email</button>
+  <div class="spacer"></div>
+  <input type="search" id="q" placeholder="Search agency, contact, email…  ( / )">
+  <label class="hint"><input type="checkbox" id="showLost"> Show lost</label>
+  <a class="btn" href="/api/export.csv">Export CSV</a>
+  <button class="btn primary" id="newBtn">+ New lead <span class="hint" style="color:#fff;opacity:.7">(N)</span></button>
+</header>
+
+<main>
+  <div class="stats" id="stats"></div>
+  <section id="view"></section>
+</main>
+
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer">
+  <div class="d-head"><h2 id="dTitle">New lead</h2><button class="btn sm" id="todoBtn" hidden title="This agency's to-dos (T)">☐ To-dos<span class="count" hidden></span></button><button class="btn sm" id="dClose">Close (Esc)</button></div>
+  <div class="d-body" id="dBody"></div>
+  <div class="d-foot" id="dFoot"></div>
+</aside>
+<div class="m-scrim" id="mScrim"></div>
+<div class="modal" id="todoModal" role="dialog" aria-modal="true" aria-labelledby="mTitle">
+  <div class="d-head"><h2 id="mTitle">To-dos</h2><button class="btn sm" id="mClose">Close (Esc)</button></div>
+  <div class="m-body"><div class="todo-list" id="todoList"></div><div id="todoAdd" style="margin-top:10px"></div></div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const STAGES = [
+  { id: "lead",       label: "Follow Up",     sub: "Productive outbound — follow up" },
+  { id: "info_sent",  label: "Info Sent",     sub: "Emailed info, awaiting reply" },
+  { id: "submission", label: "Submission In", sub: "Replied with ACORD / submission" },
+  { id: "quoted",     label: "Quoted",        sub: "Quote sent on thread" },
+  { id: "active",     label: "Appointed",     sub: "Bound & appointed — active" },
+  { id: "lost",       label: "Lost",          sub: "Not a fit / went dark" },
+];
+const S = Object.fromEntries(STAGES.map(s => [s.id, s]));
+const NEXT = { lead: "info_sent", info_sent: "submission", submission: "quoted", quoted: "active" };
+// Days in a stage before it's flagged as stale
+const STALE = { lead: 7, info_sent: 4, submission: 2, quoted: 7 };
+const ICON = { call: "📞", email: "✉️", vm: "📟", meeting: "🤝", note: "📝", stage: "➜" };
+
+let accounts = [];
+let view = localGet("view") || "today";
+let sort = { key: "next_follow_up", dir: 1 };
+let current = null; // account in drawer
+
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+function localGet(k) { try { return localStorage.getItem("pt:" + k); } catch { return null; } }
+function localSet(k, v) { try { localStorage.setItem("pt:" + k, v); } catch {} }
+
+// ---------- dates ----------
+const ymd = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const todayStr = () => ymd(new Date());
+const addDays = n => { const d = new Date(); d.setDate(d.getDate() + n); return ymd(d); };
+function nextBizDay(n) { const d = new Date(); let k = 0; while (k < n) { d.setDate(d.getDate() + 1); if (d.getDay() % 6) k++; } return ymd(d); }
+function daysBetween(a, b) { return Math.round((new Date(b + "T00:00") - new Date(a + "T00:00")) / 864e5); }
+const daysSince = iso => iso ? Math.floor((Date.now() - new Date(iso)) / 864e5) : 0;
+function fmtDate(s) { if (!s) return ""; const d = new Date(s.length <= 10 ? s + "T00:00" : s); return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }); }
+function fmtDateTime(s) { const d = new Date(s); return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }); }
+function followTag(a) {
+  if (!a.next_follow_up || a.stage === "lost") return "";
+  const diff = daysBetween(todayStr(), a.next_follow_up);
+  if (diff < 0) return `<span class="tag over">Overdue ${-diff}d</span>`;
+  if (diff === 0) return `<span class="tag today">Follow up today</span>`;
+  if (diff === 1) return `<span class="tag soon">Tomorrow</span>`;
+  return `<span class="tag">F/U ${fmtDate(a.next_follow_up)}</span>`;
+}
+function dueTag(t) {
+  if (!t.due) return "";
+  if (t.done_at) return `<span class="tag">${fmtDate(t.due)}</span>`;
+  const diff = daysBetween(todayStr(), t.due);
+  if (diff < 0) return `<span class="tag over">Overdue ${-diff}d</span>`;
+  if (diff === 0) return `<span class="tag today">Due today</span>`;
+  if (diff === 1) return `<span class="tag soon">Due tomorrow</span>`;
+  return `<span class="tag">Due ${fmtDate(t.due)}</span>`;
+}
+// Small tag on board cards: open to-do count, red if anything is overdue or blocked.
+function taskTag(a) {
+  const mine = tasks.filter(t => t.account_id === a.id);
+  if (!mine.length) return "";
+  const over = mine.filter(t => t.due && t.due < todayStr()).length, blocked = mine.filter(t => t.blocker).length;
+  const bits = [`${mine.length} to-do${mine.length > 1 ? "s" : ""}`, over && `${over} overdue`, blocked && `${blocked} blocked`].filter(Boolean);
+  return `<span class="tag ${over || blocked ? "blocked" : ""}" title="${esc(mine.map(t => "• " + t.title).join("\n"))}">☐ ${bits.join(" · ")}</span>`;
+}
+const isStale = a => STALE[a.stage] != null && daysSince(a.stage_changed_at) >= STALE[a.stage];
+function money(v) { const n = parseFloat(String(v).replace(/[^0-9.]/g, "")); return isNaN(n) ? "" : n.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 }); }
+
+// ---------- call-now indicator: agency local time, opening hours, US holidays ----------
+const TZ = {
+  "America/New_York": "ET", "America/Chicago": "CT", "America/Denver": "MT", "America/Phoenix": "AZ",
+  "America/Los_Angeles": "PT", "America/Anchorage": "AK", "Pacific/Honolulu": "HI",
+};
+const AREA_TZ = {};
+[["America/New_York", "203 475 860 959 302 202 771 239 305 321 324 352 386 407 561 645 656 689 727 728 754 772 786 813 863 904 941 954 229 404 470 478 678 706 762 770 912 943 260 317 463 574 765 812 930 502 606 859 207 227 240 301 410 443 667 339 351 413 508 617 774 781 857 978 231 248 269 313 517 586 616 679 734 810 906 947 989 603 201 551 609 640 732 848 856 862 908 973 212 315 329 332 347 363 516 518 585 607 624 631 646 680 716 718 838 845 914 917 929 934 252 336 472 704 743 828 910 919 980 984 216 220 234 283 326 330 380 419 436 440 513 567 614 740 937 215 223 267 272 412 445 484 570 582 610 717 724 814 835 878 401 803 821 839 843 854 864 423 865 802 276 434 540 571 686 703 757 804 826 948 304 681"],
+ ["America/Chicago", "205 251 256 334 659 938 327 479 501 870 448 850 217 224 309 312 331 447 464 618 630 708 730 773 779 815 847 861 872 219 319 515 563 641 712 316 620 785 913 270 364 225 318 337 504 985 218 320 507 612 651 763 952 228 601 662 769 314 417 557 573 636 660 816 975 308 402 531 701 405 539 572 580 918 605 615 629 731 901 931 210 214 254 281 325 346 361 409 430 432 469 512 682 713 726 737 806 817 830 832 903 936 940 945 956 972 979 262 274 353 414 534 608 715 920"],
+ ["America/Denver", "303 719 720 970 983 406 505 575 385 435 801 307 208 986 915"],
+ ["America/Phoenix", "480 520 602 623 928"],
+ ["America/Los_Angeles", "209 213 279 310 323 341 350 369 408 415 424 442 510 530 559 562 619 626 628 650 657 661 669 707 714 747 760 805 818 820 840 858 909 916 925 949 951 702 725 775 458 503 541 971 206 253 360 425 509 564"],
+ ["America/Anchorage", "907"], ["Pacific/Honolulu", "808"],
+].forEach(([tz, codes]) => codes.split(" ").forEach(c => AREA_TZ[c] = tz));
+// State fallback (split states use the zone most of the state is in)
+const STATE_TZ = {};
+[["America/New_York", "CT connecticut DE delaware DC FL florida GA georgia IN indiana KY kentucky ME maine MD maryland MA massachusetts MI michigan NH new_hampshire NJ new_jersey NY new_york NC north_carolina OH ohio PA pennsylvania RI rhode_island SC south_carolina VT vermont VA virginia WV west_virginia"],
+ ["America/Chicago", "AL alabama AR arkansas IL illinois IA iowa KS kansas LA louisiana MN minnesota MS mississippi MO missouri NE nebraska ND north_dakota OK oklahoma SD south_dakota TN tennessee TX texas WI wisconsin"],
+ ["America/Denver", "CO colorado ID idaho MT montana NM new_mexico UT utah WY wyoming"],
+ ["America/Phoenix", "AZ arizona"], ["America/Los_Angeles", "CA california NV nevada OR oregon WA washington"],
+ ["America/Anchorage", "AK alaska"], ["Pacific/Honolulu", "HI hawaii"],
+].forEach(([tz, list]) => list.split(" ").forEach(s => STATE_TZ[s.replace(/_/g, " ").toLowerCase()] = tz));
+
+function agencyTz(a) {
+  if (a.tz && TZ[a.tz]) return { tz: a.tz, src: "set by you" };
+  const d = String(a.phone || "").replace(/\D/g, "");
+  const ten = d.length === 11 && d[0] === "1" ? d.slice(1) : d.length >= 10 ? d.slice(0, 10) : "";
+  if (ten && AREA_TZ[ten.slice(0, 3)]) return { tz: AREA_TZ[ten.slice(0, 3)], src: `area code ${ten.slice(0, 3)}` };
+  const st = String(a.state || "").toLowerCase();
+  if (st) {
+    // Exact abbreviation/name first, then the first state name mentioned ("Kentucky, Ohio, and West Virginia")
+    if (STATE_TZ[st.trim()]) return { tz: STATE_TZ[st.trim()], src: "state" };
+    const names = Object.keys(STATE_TZ).filter(k => k.length > 2).sort((x, y) => y.length - x.length);
+    let best = null;
+    for (const n of names) { const i = st.indexOf(n); if (i >= 0 && (!best || i < best.i)) best = { i, n }; }
+    if (best) return { tz: STATE_TZ[best.n], src: "state" };
+  }
+  return null;
+}
+
+// Opening hours. Blank = Mon–Fri 9–5. Accepts e.g. "8:30-5", "8am-4:30pm", "Mon-Thu 8-5, Fri 8-12", "M-F 9-5; Sat 9-12".
+const DEFAULT_HOURS = "Mon-Fri 9-5";
+const DAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+function dayIdx(tok) {
+  tok = tok.toLowerCase();
+  const alias = { m: 1, t: 2, tu: 2, tues: 2, w: 3, th: 4, r: 4, thur: 4, thurs: 4, f: 5, sa: 6, su: 0 };
+  if (alias[tok] != null) return alias[tok];
+  const i = DAYS.findIndex(d => tok.startsWith(d)); return i;
+}
+function parseHours(text) {
+  const week = Array.from({ length: 7 }, () => null); // minutes [open, close] per weekday
+  let ok = false;
+  for (const seg of String(text || DEFAULT_HOURS).split(/[,;\n]+/)) {
+    const m = seg.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm|a|p)?\s*(?:-|–|to)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm|a|p)?/i);
+    const dayPart = (m ? seg.slice(0, m.index) : seg).trim();
+    let days = [];
+    if (dayPart) {
+      for (const piece of dayPart.replace(/\s*[-–]\s*/g, "-").split(/[\s&\/]+/)) {
+        const r = piece.split(/-|–/).map(dayIdx).filter(x => x >= 0);
+        if (r.length === 2) { for (let d = r[0]; ; d = (d + 1) % 7) { days.push(d); if (d === r[1]) break; } }
+        else if (r.length === 1) days.push(r[0]);
+      }
+    }
+    if (!days.length) days = [1, 2, 3, 4, 5];
+    if (/closed/i.test(seg)) { days.forEach(d => week[d] = null); ok = true; continue; }
+    if (!m) continue;
+    const toMin = (h, mm, ap, isEnd, startH) => {
+      h = +h; mm = +(mm || 0); ap = (ap || "").toLowerCase();
+      if (ap.startsWith("p") && h < 12) h += 12;
+      else if (ap.startsWith("a") && h === 12) h = 0;
+      else if (!ap) { if (isEnd ? h <= startH || h < 8 : h < 6) h += 12; }  // "8-5" means 8am–5pm
+      return h * 60 + mm;
+    };
+    const o = toMin(m[1], m[2], m[3], false), oh = Math.floor(o / 60);
+    const c = toMin(m[4], m[5], m[6], true, oh);
+    if (c <= o) continue;
+    days.forEach(d => week[d] = [o, c]); ok = true;
+  }
+  return ok ? week : parseHours(DEFAULT_HOURS);
+}
+
+// US holidays. "closed" = nearly every agency is shut; "maybe" = many stay open or close early.
+const holidayCache = {};
+function usHolidays(y) {
+  if (holidayCache[y]) return holidayCache[y];
+  const iso = (m, d) => ymd(new Date(y, m, d));
+  const nth = (m, wd, n) => { const d = new Date(y, m, 1); d.setDate(1 + ((wd - d.getDay() + 7) % 7) + 7 * (n - 1)); return ymd(d); };
+  const last = (m, wd) => { const d = new Date(y, m + 1, 0); d.setDate(d.getDate() - ((d.getDay() - wd + 7) % 7)); return ymd(d); };
+  const observed = (m, d) => { const x = new Date(y, m, d); if (x.getDay() === 6) x.setDate(d - 1); if (x.getDay() === 0) x.setDate(d + 1); return ymd(x); };
+  const thanks = nth(10, 4, 4), fri = new Date(thanks + "T00:00"); fri.setDate(fri.getDate() + 1);
+  const h = {};
+  const add = (date, name, kind) => { h[date] = { name, kind }; };
+  add(iso(0, 1), "New Year's Day", "closed"); add(observed(0, 1), "New Year's Day (observed)", "closed");
+  add(nth(0, 1, 3), "MLK Day", "maybe");
+  add(nth(1, 1, 3), "Presidents' Day", "maybe");
+  add(last(4, 1), "Memorial Day", "closed");
+  add(observed(5, 19), "Juneteenth", "maybe");
+  add(iso(6, 4), "Independence Day", "closed"); add(observed(6, 4), "Independence Day (observed)", "closed");
+  add(nth(8, 1, 1), "Labor Day", "closed");
+  add(nth(9, 1, 2), "Columbus Day", "maybe");
+  add(observed(10, 11), "Veterans Day", "maybe");
+  add(thanks, "Thanksgiving", "closed");
+  add(ymd(fri), "Day after Thanksgiving", "maybe");
+  add(iso(11, 24), "Christmas Eve", "maybe");
+  add(iso(11, 25), "Christmas Day", "closed"); add(observed(11, 25), "Christmas (observed)", "closed");
+  add(iso(11, 31), "New Year's Eve", "maybe");
+  if (new Date(y + 1, 0, 1).getDay() === 6) add(iso(11, 31), "New Year's Day (observed)", "closed");
+  return holidayCache[y] = h;
+}
+
+// Wall-clock parts of `date` in a timezone
+function partsIn(tz, date = new Date()) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: tz, hourCycle: "h23", weekday: "short", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })
+    .formatToParts(date).map(x => [x.type, x.value]));
+  return { y: +p.year, ymd: `${p.year}-${p.month}-${p.day}`, wd: DAYS.indexOf(p.weekday.slice(0, 3).toLowerCase()), min: +p.hour * 60 + +p.minute };
+}
+const clock = min => { const h = Math.floor(min / 60) % 24, m = min % 60; return `${h % 12 || 12}${m ? ":" + String(m).padStart(2, "0") : ""}${h < 12 ? "am" : "pm"}`; };
+const DAYNAME = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+// → { level: "go" | "wait" | "no", label, title } or null if we can't tell where they are
+function callStatus(a, date = new Date()) {
+  const z = agencyTz(a); if (!z) return null;
+  const t = partsIn(z.tz, date), week = parseHours(a.hours);
+  const hol = usHolidays(t.y)[t.ymd];
+  const local = `${clock(t.min)} ${TZ[z.tz]}`;
+  const hoursTxt = a.hours ? a.hours : `${DEFAULT_HOURS} (default)`;
+  const title = `Their time: ${local} (${z.src})\nHours: ${hoursTxt}${hol ? `\nToday: ${hol.name}` : ""}`;
+  const nextOpen = () => {
+    for (let k = 1; k <= 10; k++) {
+      const p = partsIn(z.tz, new Date(date.getTime() + k * 864e5)), w = week[p.wd];
+      if (w && usHolidays(p.y)[p.ymd]?.kind !== "closed") return `${k === 1 ? "tmrw" : DAYNAME[p.wd]} ${clock(w[0])}`;
+    }
+    return "";
+  };
+  const today = week[t.wd];
+  if (hol?.kind === "closed") return { level: "no", label: `${local} · ${hol.name}`, title: title + `\nOpens ${nextOpen()}` };
+  if (!today || t.min >= today[1]) { const n = nextOpen(); return { level: "no", label: `${local} · Closed`, title: title + (n ? `\nOpens ${n}` : "") }; }
+  if (t.min < today[0]) return { level: "no", label: `${local} · Opens ${clock(today[0])}`, title };
+  if (hol) return { level: "wait", label: `${local} · ${hol.name}`, title: title + "\nMany agencies close or run short-staffed today" };
+  if (today[1] - t.min <= 30) return { level: "wait", label: `${local} · Closes ${clock(today[1])}`, title };
+  if (t.min >= 720 && t.min < 780) return { level: "wait", label: `${local} · Lunch`, title: title + "\nLunch hour, may not pick up" };
+  return { level: "go", label: `${local} · Open`, title };
+}
+// Keep the drawer's badge ticking while it's open
+let drawerPreview = null;
+setInterval(() => { if ($("#drawer").classList.contains("on")) drawerPreview?.(); }, 30 * 1000);
+
+// ---------- api ----------
+async function api(path, opts = {}) {
+  const r = await fetch("/api" + path, { headers: { "Content-Type": "application/json" }, ...opts, body: opts.body ? JSON.stringify(opts.body) : undefined });
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+let review = [], orders = {}, tasks = []; // tasks = open to-dos across all agencies
+async function load() {
+  [accounts, review, orders, tasks] = await Promise.all([api("/accounts"), api("/review").catch(() => []), api("/order").catch(() => ({})), api("/tasks").catch(() => [])]);
+  render();
+}
+
+// ---------- your own order (drag to rearrange) ----------
+// Lists you've arranged keep your order. Anything new shows at the top, in the default order, until you place it.
+function applyOrder(key, list) {
+  const pos = new Map((orders[key] || []).map((id, i) => [id, i]));
+  const fresh = list.filter(a => !pos.has(a.id)), placed = list.filter(a => pos.has(a.id));
+  placed.sort((a, b) => pos.get(a.id) - pos.get(b.id));
+  return [...fresh, ...placed];
+}
+async function saveOrder(key, ids) {
+  // Keep the saved spot of anything hidden by search, after the ones you can see.
+  const seen = new Set(ids);
+  const merged = [...ids, ...(orders[key] || []).filter(id => !seen.has(id))];
+  orders[key] = merged;
+  try { orders = await api("/order", { method: "POST", body: { key, ids: merged } }); } catch (e) { toast(e.message); }
+}
+let drag = null; // { el, kind: "card" | "box", from }
+// Where to drop: before the first sibling whose middle is past the pointer.
+function dropBefore(container, sel, x, y, horizontal) {
+  return [...container.querySelectorAll(sel)].filter(el => el !== drag.el).find(el => {
+    const r = el.getBoundingClientRect();
+    if (horizontal) return y < r.top || (y <= r.bottom && x < r.left + r.width / 2);
+    return y < r.top + r.height / 2;
+  }) || null;
+}
+function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.add("on"); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("on"), 1800); }
+
+// ---------- filtering ----------
+function filtered() {
+  const q = $("#q").value.trim().toLowerCase();
+  const showLost = $("#showLost").checked;
+  return accounts.filter(a => (showLost || a.stage !== "lost") &&
+    (!q || [a.agency, a.contact, a.email, a.phone, a.state, a.lines, a.notes, a.gaps,
+      ...tasks.filter(t => t.account_id === a.id).map(t => [t.title, t.follow_up_with, t.blocker, t.blocker_owner].join(" "))].join(" ").toLowerCase().includes(q)));
+}
+
+// ---------- attention list ----------
+function attention() {
+  const t = todayStr();
+  const open = accounts.filter(a => a.stage !== "lost");
+  const fu = open.filter(a => a.next_follow_up && a.next_follow_up <= t).sort((a, b) => a.next_follow_up.localeCompare(b.next_follow_up));
+  const fuIds = new Set(fu.map(a => a.id));
+  const noReply = open.filter(a => a.stage === "info_sent" && isStale(a) && !fuIds.has(a.id));
+  const toQuote = open.filter(a => a.stage === "submission").sort((a, b) => a.stage_changed_at.localeCompare(b.stage_changed_at));
+  const quotedWaiting = open.filter(a => a.stage === "quoted" && isStale(a) && !fuIds.has(a.id));
+  const noFu = open.filter(a => !a.next_follow_up && ["lead", "info_sent", "quoted"].includes(a.stage));
+  const upcoming = open.filter(a => a.next_follow_up && a.next_follow_up > t && a.next_follow_up <= addDays(7)).sort((a, b) => a.next_follow_up.localeCompare(b.next_follow_up));
+  return { fu, noReply, toQuote, quotedWaiting, noFu, upcoming };
+}
+
+// ---------- render ----------
+function render() {
+  document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("on", b.dataset.v === view));
+  const att = attention();
+  const urgent = att.fu.length + att.toQuote.length + review.length + tasks.filter(t => t.due && t.due <= todayStr()).length;
+  const c = $("#todayCount"); c.hidden = !urgent; c.textContent = urgent;
+  renderStats();
+  if (view === "board") renderBoard();
+  else if (view === "list") renderList();
+  else if (view === "stats") renderPerformance();
+  else renderToday(att);
+}
+
+// ---------- dial counter ----------
+let today = { dials: 0, connects: 0, goal: 0 };
+async function loadToday() {
+  const t = todayStr();
+  const s = await api(`/stats?from=${t}&to=${t}`);
+  today = { dials: s.totals.dials, connects: s.totals.connects, goal: s.dial_goal };
+  paintCounter();
+}
+function paintCounter() {
+  // don't overwrite a box while you're typing in it
+  if (document.activeElement !== $("#dialIn")) $("#dialIn").value = today.dials;
+  if (document.activeElement !== $("#connIn")) $("#connIn").value = today.connects;
+  $("#goalTxt").textContent = today.goal ? `/ ${today.goal}` : "";
+  const gb = $("#goalbar"); gb.hidden = !today.goal;
+  if (today.goal) gb.firstElementChild.style.width = Math.min(100, 100 * today.dials / today.goal) + "%";
+}
+async function setCount(kind, value) {
+  value = Math.max(0, Math.floor(+value || 0));
+  if (value === today[kind]) return;
+  today[kind] = value; paintCounter();
+  const r = await api("/daily", { method: "POST", body: { date: todayStr(), [kind]: value } });
+  today.dials = r.dials; today.connects = r.connects; paintCounter();
+  const el = kind === "dials" ? $("#dialIn") : $("#connIn");
+  el.classList.add("saved"); setTimeout(() => el.classList.remove("saved"), 700);
+  if (view === "stats") renderPerformance();
+}
+// Saves on Enter, Tab or clicking away. Enter also jumps Dials → Connects so you can type both fast.
+document.querySelectorAll(".counter input").forEach(inp => {
+  inp.onfocus = () => inp.select();
+  inp.onchange = () => setCount(inp.dataset.c, inp.value);
+  inp.onkeydown = e => {
+    if (e.key === "Enter") { e.preventDefault(); setCount(inp.dataset.c, inp.value); inp.id === "dialIn" ? $("#connIn").focus() : inp.blur(); }
+  };
+});
+
+// ---------- performance ----------
+const RANGES = [
+  ["today", "Today"], ["yesterday", "Yesterday"], ["week", "This week"], ["lastweek", "Last week"],
+  ["month", "This month"], ["lastmonth", "Last month"], ["30", "Last 30 days"], ["90", "Last 90 days"],
+  ["quarter", "This quarter"], ["year", "This year"], ["all", "All time"],
+];
+let perfRange = localGet("range") || "week";
+let perfMetric = localGet("metric") || "dials";
+const METRICS = [["dials", "Dials"], ["connects", "Connects"], ["lead", "Interested"], ["info_sent", "Info sent"], ["submission", "Submissions"], ["quoted", "Quoted"], ["active", "Appointed"]];
+
+function rangeDates(key) {
+  const d = new Date(); d.setHours(0, 0, 0, 0);
+  const at = (y, m, day) => new Date(y, m, day);
+  const monday = new Date(d); monday.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  const shift = (x, n) => { const y = new Date(x); y.setDate(y.getDate() + n); return y; };
+  switch (key) {
+    case "today": return [d, d];
+    case "yesterday": return [shift(d, -1), shift(d, -1)];
+    case "week": return [monday, d];
+    case "lastweek": return [shift(monday, -7), shift(monday, -1)];
+    case "month": return [at(d.getFullYear(), d.getMonth(), 1), d];
+    case "lastmonth": return [at(d.getFullYear(), d.getMonth() - 1, 1), at(d.getFullYear(), d.getMonth(), 0)];
+    case "30": return [shift(d, -29), d];
+    case "90": return [shift(d, -89), d];
+    case "quarter": return [at(d.getFullYear(), Math.floor(d.getMonth() / 3) * 3, 1), d];
+    case "year": return [at(d.getFullYear(), 0, 1), d];
+    default: return [null, d];
+  }
+}
+// The equal-length window right before [a, b], so "this week so far" compares to the same number of days before it.
+function prevWindow(a, b) {
+  const len = Math.round((b - a) / 864e5) + 1;
+  const pb = new Date(a); pb.setDate(pb.getDate() - 1);
+  const pa = new Date(pb); pa.setDate(pa.getDate() - len + 1);
+  return [pa, pb];
+}
+const pct = (n, d) => d ? Math.round(100 * n / d) + "%" : "—";
+const fmtN = n => Math.round(n).toLocaleString();
+
+async function renderPerformance() {
+  const [a, b] = rangeDates(perfRange);
+  const q = a ? `?from=${ymd(a)}&to=${ymd(b)}` : `?to=${ymd(b)}`;
+  const reqs = [api("/stats" + q)];
+  if (a) { const [pa, pb] = prevWindow(a, b); reqs.push(api(`/stats?from=${ymd(pa)}&to=${ymd(pb)}`)); }
+  const [s, prev] = await Promise.all(reqs);
+  if (view !== "stats") return;
+  const T = s.totals, P = prev?.totals;
+  const workdays = s.days.filter(x => x.dials > 0).length;
+
+  const delta = (k, isPct) => {
+    if (!P) return "";
+    const cur = isPct ? isPct(T) : T[k], was = isPct ? isPct(P) : P[k];
+    if (cur == null || was == null) return `<div class="d">&nbsp;</div>`;
+    const diff = cur - was;
+    if (!diff) return `<div class="d">same as prior period</div>`;
+    const txt = isPct ? `${diff > 0 ? "+" : ""}${Math.round(diff)} pts` : `${diff > 0 ? "+" : ""}${k === "bound_premium" ? money(diff) : fmtN(diff)}`;
+    return `<div class="d ${diff > 0 ? "up" : "down"}">${diff > 0 ? "▲" : "▼"} ${txt} vs prior period</div>`;
+  };
+  const rate = (n, d) => t => t[d] ? 100 * t[n] / t[d] : null;
+  const kpi = (label, value, d) => `<div class="kpi"><div class="l">${label}</div><div class="n">${value}</div>${d}</div>`;
+
+  const steps = [["dials", "Dials"], ["connects", "Connects"], ["lead", "Interested"], ["info_sent", "Info sent"], ["submission", "Submissions"], ["quoted", "Quoted"], ["active", "Appointed"]];
+  const funnel = steps.map(([k, l], i) => (i ? `<div class="farrow">${pct(T[k], T[steps[i - 1][0]])}<span>→</span></div>` : "") +
+    `<div class="fstep"><div class="n">${fmtN(T[k])}</div><div class="l">${l}</div></div>`).join("");
+
+  const V = s.velocity, vrow = (l, k) => `<div><span>${l}</span><b>${V[k] == null ? "—" : V[k] + " days"}</b></div>`;
+
+  const rows = s.days.slice().reverse().filter(x => x.date === todayStr() || x.dials || x.connects || x.touches || x.lead || x.info_sent || x.submission || x.quoted || x.active || x.lost);
+  const cell = n => n ? fmtN(n) : `<span class="z">0</span>`;
+  const table = `<table class="daily"><thead><tr><th>Day</th><th>Dials</th><th>Connects</th><th>Connect %</th><th>Interested</th><th>Info sent</th><th>Submissions</th><th>Quoted</th><th>Appointed</th><th>Lost</th><th>Touches</th><th>Bound premium</th></tr></thead><tbody>
+    ${rows.map(x => `<tr>
+      <td>${new Date(x.date + "T00:00").toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}</td>
+      <td><input type="number" min="0" data-day="${x.date}" data-k="dials" value="${x.dials}"></td>
+      <td><input type="number" min="0" data-day="${x.date}" data-k="connects" value="${x.connects}"></td>
+      <td>${pct(x.connects, x.dials)}</td><td>${cell(x.lead)}</td><td>${cell(x.info_sent)}</td><td>${cell(x.submission)}</td>
+      <td>${cell(x.quoted)}</td><td>${cell(x.active)}</td><td>${cell(x.lost)}</td><td>${cell(x.touches)}</td><td>${x.bound_premium ? money(x.bound_premium) : '<span class="z">—</span>'}</td>
+    </tr>`).join("") || `<tr><td colspan="12" class="empty">No activity in this range yet.</td></tr>`}
+    ${rows.length > 1 ? `<tr class="total"><td>Total</td><td>${fmtN(T.dials)}</td><td>${fmtN(T.connects)}</td><td>${pct(T.connects, T.dials)}</td><td>${fmtN(T.lead)}</td><td>${fmtN(T.info_sent)}</td><td>${fmtN(T.submission)}</td><td>${fmtN(T.quoted)}</td><td>${fmtN(T.active)}</td><td>${fmtN(T.lost)}</td><td>${fmtN(T.touches)}</td><td>${money(T.bound_premium) || "—"}</td></tr>` : ""}
+    </tbody></table>`;
+
+  $("#view").innerHTML = `
+    <div class="toolbar">
+      <select id="rangeSel">${RANGES.map(([k, l]) => `<option value="${k}" ${k === perfRange ? "selected" : ""}>${l}</option>`).join("")}</select>
+      <span class="hint">${fmtDate(s.start)} – ${fmtDate(s.end)}${P ? " · compared with the " + s.days.length + " days before" : ""}</span>
+      <span class="spacer"></span>
+      <label class="hint">Daily dial goal <input type="number" id="goalIn" min="0" style="width:70px" value="${s.dial_goal || ""}" placeholder="—"></label>
+      <button class="btn" id="perfCsv">Export stats CSV</button>
+    </div>
+    <div class="kpis">
+      ${kpi("Dials", fmtN(T.dials), delta("dials"))}
+      ${kpi("Avg dials / calling day", workdays ? fmtN(T.dials / workdays) : "—", `<div class="d">${workdays} day${workdays === 1 ? "" : "s"} with dials</div>`)}
+      ${kpi("Connect rate", pct(T.connects, T.dials), delta(null, rate("connects", "dials")))}
+      ${kpi("Interested", fmtN(T.lead), delta("lead"))}
+      ${kpi("Submissions", fmtN(T.submission), delta("submission"))}
+      ${kpi("Quoted", fmtN(T.quoted), delta("quoted"))}
+      ${kpi("Appointed", fmtN(T.active), delta("active"))}
+      ${kpi("Bound premium", money(T.bound_premium) || "$0", delta("bound_premium"))}
+    </div>
+    <div class="box" style="margin-bottom:14px"><h3>Funnel <small>% = conversion from the step before</small></h3><div class="funnel">${funnel}</div></div>
+    <div class="stats-grid">
+      <div class="box"><h3><span id="chartTitle"></span>
+        <div class="seg" id="metricSeg">${METRICS.map(([k, l]) => `<button data-m="${k}" class="${k === perfMetric ? "on" : ""}">${l}</button>`).join("")}</div></h3>
+        <div class="chart-wrap" id="chart"></div></div>
+      <div class="box"><h3>Speed <small>average days, for deals that moved in this range</small></h3><div class="vel">
+        ${vrow("Interested → info sent", "lead>info_sent")}${vrow("Info sent → submission", "info_sent>submission")}
+        ${vrow("Submission → quoted", "submission>quoted")}${vrow("Quoted → appointed", "quoted>active")}${vrow("Interested → appointed (total)", "lead>active")}
+      </div></div>
+    </div>
+    <div class="box"><h3>By day <small>dials &amp; connects are editable · everything else is counted from your pipeline</small></h3>
+      <div style="overflow-x:auto">${table}</div>
+      <div class="toolbar" style="padding:10px 14px;margin:0;border-top:1px solid var(--line)">
+        <span class="hint">Add or fix a different day:</span>
+        <input type="date" id="fixDay" value="${addDays(-1)}" max="${todayStr()}">
+        <input type="number" id="fixDials" min="0" placeholder="Dials" style="width:80px">
+        <input type="number" id="fixConn" min="0" placeholder="Connects" style="width:90px">
+        <button class="btn sm" id="fixBtn">Save day</button>
+      </div>
+    </div>`;
+
+  drawChart(s.days);
+  $("#rangeSel").onchange = e => { perfRange = e.target.value; localSet("range", perfRange); renderPerformance(); };
+  $("#metricSeg").onclick = e => { const b = e.target.closest("button"); if (!b) return; perfMetric = b.dataset.m; localSet("metric", perfMetric); renderPerformance(); };
+  $("#goalIn").onchange = async e => { await api("/settings", { method: "POST", body: { dial_goal: +e.target.value || 0 } }); await loadToday(); toast("Goal saved"); };
+  $("#perfCsv").onclick = () => exportPerf(s);
+  document.querySelectorAll("table.daily input").forEach(inp => inp.onchange = async () => {
+    await api("/daily", { method: "POST", body: { date: inp.dataset.day, [inp.dataset.k]: Math.max(0, +inp.value || 0) } });
+    if (inp.dataset.day === todayStr()) await loadToday();
+    toast("Updated"); renderPerformance();
+  });
+  $("#fixBtn").onclick = async () => {
+    const body = { date: $("#fixDay").value };
+    if ($("#fixDials").value !== "") body.dials = +$("#fixDials").value;
+    if ($("#fixConn").value !== "") body.connects = +$("#fixConn").value;
+    if (!body.date || (body.dials == null && body.connects == null)) { toast("Pick a day and enter dials or connects"); return; }
+    await api("/daily", { method: "POST", body });
+    if (body.date === todayStr()) await loadToday();
+    toast(`Saved ${fmtDate(body.date)}`); renderPerformance();
+  };
+}
+
+// One series, one axis. Long ranges roll up to weeks so bars stay readable.
+function drawChart(days) {
+  const label = METRICS.find(m => m[0] === perfMetric)[1];
+  let buckets = days.map(d => ({ key: d.date, label: fmtDate(d.date), tip: new Date(d.date + "T00:00").toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }), v: d[perfMetric], dials: d.dials, connects: d.connects }));
+  let unit = "day";
+  if (buckets.length > 45) {
+    unit = "week";
+    const wk = new Map();
+    days.forEach(d => {
+      const dt = new Date(d.date + "T00:00"); dt.setDate(dt.getDate() - ((dt.getDay() + 6) % 7));
+      const k = ymd(dt);
+      const w = wk.get(k) || { key: k, label: fmtDate(k), tip: "Week of " + fmtDate(k), v: 0, dials: 0, connects: 0 };
+      w.v += d[perfMetric]; w.dials += d.dials; w.connects += d.connects; wk.set(k, w);
+    });
+    buckets = [...wk.values()];
+  }
+  $("#chartTitle").textContent = `${label} per ${unit}`;
+  const el = $("#chart");
+  if (buckets.length < 2) { el.innerHTML = `<div class="empty" style="padding:60px 0">Pick a longer range to see a trend.</div>`; return; }
+  const W = el.clientWidth - 28 || 600, H = 220, padL = 32, padB = 22, padT = 8;
+  const max = Math.max(1, ...buckets.map(b => b.v));
+  const step = max <= 5 ? 1 : Math.pow(10, Math.floor(Math.log10(max))) * (max / Math.pow(10, Math.floor(Math.log10(max))) > 5 ? 2 : 1);
+  const top = Math.ceil(max / step) * step;
+  const ticks = []; for (let t = 0; t <= top; t += step) ticks.push(t);
+  const plotW = W - padL, plotH = H - padT - padB, band = plotW / buckets.length;
+  const bw = Math.max(2, Math.min(24, band - 2));
+  const y = v => padT + plotH - (v / top) * plotH;
+  const every = Math.ceil(buckets.length / Math.floor(plotW / 56));
+  const bar = (x, v) => { // 4px rounded top, square at baseline
+    const h = Math.max(0, (v / top) * plotH), r = Math.min(4, h, bw / 2), yb = padT + plotH, yt = yb - h;
+    if (!h) return "";
+    return `M${x},${yb}V${yt + r}Q${x},${yt} ${x + r},${yt}H${x + bw - r}Q${x + bw},${yt} ${x + bw},${yt + r}V${yb}Z`;
+  };
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${label} per ${unit}">
+    ${ticks.map(t => `<line class="grid" x1="${padL}" x2="${W}" y1="${y(t)}" y2="${y(t)}"/><text class="axis" x="${padL - 6}" y="${y(t) + 4}" text-anchor="end">${fmtN(t)}</text>`).join("")}
+    ${buckets.map((b, i) => { const x = padL + i * band + (band - bw) / 2; return `
+      <rect class="hit" data-i="${i}" x="${padL + i * band}" y="${padT}" width="${band}" height="${plotH}"/>
+      <path class="bar" d="${bar(x, b.v)}"/>
+      ${i % every === 0 ? `<text class="axis" x="${x + bw / 2}" y="${H - 6}" text-anchor="middle">${b.label}</text>` : ""}`; }).join("")}
+  </svg><div class="tip" id="tip"></div>`;
+  const tip = $("#tip");
+  el.querySelectorAll(".hit").forEach(h => {
+    h.onmouseenter = () => {
+      const b = buckets[+h.dataset.i];
+      tip.innerHTML = `<b>${b.tip}</b>${label}: ${fmtN(b.v)}${perfMetric !== "dials" ? `<br><span class="hint">Dials: ${fmtN(b.dials)}</span>` : `<br><span class="hint">Connects: ${fmtN(b.connects)} (${pct(b.connects, b.dials)})</span>`}`;
+      tip.style.display = "block";
+      const hx = +h.getAttribute("x") + band / 2 + 14, tw = tip.offsetWidth;
+      tip.style.left = Math.min(Math.max(0, hx - tw / 2), el.clientWidth - tw) + "px";
+      tip.style.top = Math.max(0, y(b.v) - tip.offsetHeight - 6) + 10 + "px";
+    };
+    h.onmouseleave = () => { tip.style.display = "none"; };
+  });
+}
+
+function exportPerf(s) {
+  const cols = ["date", "dials", "connects", "lead", "info_sent", "submission", "quoted", "active", "lost", "touches", "bound_premium"];
+  const head = ["date", "dials", "connects", "interested", "info_sent", "submissions", "quoted", "appointed", "lost", "touches", "bound_premium"];
+  const csv = [head.join(","), ...s.days.map(d => cols.map(c => d[c]).join(","))].join("\n");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+  a.download = `performance-${s.start}-to-${s.end}.csv`; a.click();
+}
+
+function renderStats() {
+  const counts = Object.fromEntries(STAGES.map(s => [s.id, 0]));
+  let quotedPrem = 0, activePrem = 0;
+  accounts.forEach(a => {
+    counts[a.stage]++;
+    const p = parseFloat(String(a.premium).replace(/[^0-9.]/g, "")) || 0;
+    if (a.stage === "quoted") quotedPrem += p;
+    if (a.stage === "active") activePrem += p;
+  });
+  const stage = STAGES.filter(s => s.id !== "lost").map(s => `
+    <div class="stat" style="--c:var(--s-${s.id})" data-stage="${s.id}">
+      <div class="n">${counts[s.id]}</div><div class="l">${s.label}${s.id === "quoted" && quotedPrem ? " · " + money(quotedPrem) : ""}${s.id === "active" && activePrem ? " · " + money(activePrem) : ""}</div>
+    </div>`).join("");
+  const sent = counts.info_sent + counts.submission + counts.quoted + counts.active;
+  const subRate = sent ? Math.round(100 * (counts.submission + counts.quoted + counts.active) / sent) : 0;
+  $("#stats").innerHTML = stage + `<div class="stat"><div class="n">${subRate}%</div><div class="l">Info sent → submission</div></div>`;
+  document.querySelectorAll(".stat[data-stage]").forEach(el => el.onclick = () => { view = "board"; localSet("view", view); render(); document.querySelector(`.col[data-stage="${el.dataset.stage}"]`)?.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" }); });
+}
+
+function cardHTML(a) {
+  const stale = isStale(a) ? `<span class="tag stale">${daysSince(a.stage_changed_at)}d in stage</span>` : "";
+  const prem = a.premium && ["quoted", "active"].includes(a.stage) ? `<span class="tag money">${money(a.premium)}</span>` : "";
+  return `<div class="card" draggable="true" data-id="${a.id}" style="--c:var(--s-${a.stage})">
+    <div class="a">${esc(a.agency)}</div>
+    <div class="m">${esc([a.contact, a.state].filter(Boolean).join(" · ")) || "&nbsp;"}</div>
+    <div class="tags">${a.inherited_stage ? `<span class="tag" title="Inherited account, already in ${S[a.inherited_stage].label} when taken over">Inherited</span>` : ""}${followTag(a)}${taskTag(a)}${stale}${prem}${a.lines ? `<span class="tag">${esc(a.lines)}</span>` : ""}${linkTags(a)}</div>
+  </div>`;
+}
+
+function renderBoard() {
+  const list = filtered();
+  const cols = STAGES.filter(s => s.id !== "lost" || $("#showLost").checked);
+  $("#view").innerHTML = `<div class="board" style="--cols:${cols.length}">` + cols.map(s => {
+    const items = applyOrder(`board:${s.id}`, list.filter(a => a.stage === s.id).sort((a, b) => (a.next_follow_up || "9999").localeCompare(b.next_follow_up || "9999")));
+    return `<div class="col" data-stage="${s.id}" style="--c:var(--s-${s.id})">
+      <div class="col-h"><span class="dot"></span><b>${s.label}<span class="sub">${s.sub}</span></b><span class="n">${items.length}</span></div>
+      <div class="cards">${items.map(cardHTML).join("") || `<div class="empty">Drag cards here</div>`}</div>
+    </div>`;
+  }).join("") + `</div>`;
+  bindCards();
+  document.querySelectorAll(".col").forEach(col => {
+    const cards = col.querySelector(".cards");
+    col.ondragover = e => {
+      if (drag?.kind !== "card") return;
+      e.preventDefault();
+      document.querySelectorAll(".col.drop").forEach(c => c !== col && c.classList.remove("drop"));
+      if (col.dataset.stage !== drag.from) col.classList.add("drop");
+      const before = dropBefore(cards, ".card", e.clientX, e.clientY);
+      if (before !== drag.el.nextSibling || drag.el.parentNode !== cards) cards.insertBefore(drag.el, before);
+      cards.querySelector(".empty")?.remove();
+    };
+    col.ondrop = async e => {
+      if (drag?.kind !== "card") return;
+      e.preventDefault(); col.classList.remove("drop");
+      const a = accounts.find(x => x.id === +drag.el.dataset.id);
+      const ids = [...cards.querySelectorAll(".card")].map(c => +c.dataset.id);
+      drag.dropped = true;
+      await saveOrder(`board:${col.dataset.stage}`, ids);
+      if (a && a.stage !== col.dataset.stage) await moveStage(a, col.dataset.stage);
+      else renderBoard();
+    };
+  });
+}
+
+function bindCards() {
+  document.querySelectorAll("[data-id]").forEach(el => {
+    el.onclick = () => openDrawer(+el.dataset.id);
+    if (el.draggable) {
+      el.ondragstart = e => {
+        e.stopPropagation();
+        e.dataTransfer.setData("text/plain", el.dataset.id); e.dataTransfer.effectAllowed = "move";
+        drag = { el, kind: el.classList.contains("card") ? "card" : "item", from: el.closest("[data-stage],[data-box]")?.dataset.stage };
+        setTimeout(() => el.classList.add("dragging"));
+      };
+      el.ondragend = () => {
+        el.classList.remove("dragging"); document.querySelectorAll(".drop").forEach(c => c.classList.remove("drop"));
+        if (drag && !drag.dropped) render(); // dropped outside a list: put things back
+        drag = null;
+      };
+    }
+  });
+}
+
+function renderList() {
+  const cols = [["agency", "Agency"], ["contact", "Contact"], ["stage", "Stage"], ["state", "State"], ["next_follow_up", "Follow up"], ["premium", "Premium"], ["last_touch_at", "Last touch"]];
+  const list = filtered().sort((a, b) => {
+    let x = a[sort.key] || "", y = b[sort.key] || "";
+    if (sort.key === "stage") { x = STAGES.findIndex(s => s.id === a.stage); y = STAGES.findIndex(s => s.id === b.stage); }
+    if (sort.key === "next_follow_up") { x = x || "9999"; y = y || "9999"; }
+    return (x > y ? 1 : x < y ? -1 : 0) * sort.dir;
+  });
+  $("#view").innerHTML = `<table><thead><tr>${cols.map(([k, l]) => `<th data-k="${k}">${l}${sort.key === k ? (sort.dir > 0 ? " ↑" : " ↓") : ""}</th>`).join("")}</tr></thead><tbody>` +
+    (list.map(a => `<tr class="row" data-id="${a.id}">
+      <td><b>${esc(a.agency)}</b>${a.lines ? `<div class="hint">${esc(a.lines)}</div>` : ""}${linkTags(a) ? `<div class="tags" style="display:flex;gap:4px;margin-top:3px">${linkTags(a)}</div>` : ""}</td>
+      <td>${esc(a.contact)}${a.email ? `<div class="hint">${esc(a.email)}</div>` : ""}</td>
+      <td><span class="pill" style="--c:var(--s-${a.stage})">${S[a.stage].label}</span>${isStale(a) ? ` <span class="tag stale">${daysSince(a.stage_changed_at)}d</span>` : ""}</td>
+      <td>${esc(a.state)}</td>
+      <td>${followTag(a) || '<span class="hint">—</span>'}</td>
+      <td>${money(a.premium)}</td>
+      <td class="hint">${a.last_touch_at ? fmtDate(a.last_touch_at) : ""}</td>
+    </tr>`).join("") || `<tr><td colspan="7" class="empty">No accounts match.</td></tr>`) + `</tbody></table>`;
+  document.querySelectorAll("th").forEach(th => th.onclick = () => { sort = { key: th.dataset.k, dir: sort.key === th.dataset.k ? -sort.dir : 1 }; renderList(); });
+  bindCards();
+}
+
+function renderToday(att) {
+  const item = (a, meta) => `<div class="item" draggable="true" data-id="${a.id}">
+      <span class="pill" style="--c:var(--s-${a.stage})"></span>
+      <div class="grow"><b>${esc(a.agency)}</b><div class="m">${esc(meta)}</div></div>${followTag(a)}</div>`;
+  const box = (key, title, hint, list, metaFn) => `<div class="box" data-box="${key}"><h3 title="Drag to move this box"><span><span class="grip">⋮⋮</span>${title}</span> <small>${list.length ? list.length + " · " : ""}${hint}</small></h3>
+      <div class="items">${applyOrder(`today:${key}`, list).map(a => item(a, metaFn(a))).join("") || `<div class="empty">Nothing here 🎉</div>`}</div></div>`;
+  const who = a => [S[a.stage].label, a.contact, a.phone || a.email].filter(Boolean).join(" · ");
+  const sections = {
+    fu: () => box("fu", "Follow-ups due", "due today or overdue", att.fu, who),
+    toQuote: () => box("toQuote", "Submissions to quote", "ACORDs waiting on you", att.toQuote, a => `Received ${daysSince(a.stage_changed_at)}d ago · ${a.lines || a.contact || ""}`),
+    noReply: () => box("noReply", "Info sent — no reply", `${STALE.info_sent}+ days, nudge on the thread`, att.noReply, a => `Sent ${daysSince(a.stage_changed_at)}d ago · ${a.contact || a.email || ""}`),
+    quotedWaiting: () => box("quotedWaiting", "Quotes awaiting decision", `${STALE.quoted}+ days since quote`, att.quotedWaiting, a => `Quoted ${daysSince(a.stage_changed_at)}d ago${a.premium ? " · " + money(a.premium) : ""}`),
+    upcoming: () => box("upcoming", "Coming up this week", "next 7 days", att.upcoming, who),
+    noFu: () => box("noFu", "No follow-up set", "open deals with no next step", att.noFu, who),
+    todos: () => {
+      const t0 = todayStr(), due = tasks.filter(t => t.due && t.due <= t0).length;
+      const items = tasks.map(t => `<div class="item" data-task-open="${t.account_id}">
+          <input type="checkbox" class="todo-chk" data-task-done="${t.id}" title="Mark done">
+          <div class="grow"><b>${esc(t.title)}</b><div class="m">${esc([t.agency, t.follow_up_with && "with " + t.follow_up_with].filter(Boolean).join(" · "))}</div>
+            ${t.blocker ? `<div class="m" style="color:var(--danger)">⛔ ${esc(t.blocker)}${t.blocker_owner ? " → " + esc(t.blocker_owner) : ""}</div>` : ""}</div>
+          ${dueTag(t)}</div>`).join("");
+      return `<div class="box" data-box="todos"><h3 title="Drag to move this box"><span><span class="grip">⋮⋮</span>To-dos</span> <small>${tasks.length ? `${tasks.length} open${due ? ` · ${due} due` : ""} · ` : ""}across all agencies</small></h3>
+        <div class="items">${items || `<div class="empty">No open to-dos. Add them from an agency's panel.</div>`}</div></div>`;
+    },
+  };
+  const sectionOrder = () => { const saved = (orders.sections || []).filter(k => sections[k]); return [...saved, ...Object.keys(sections).filter(k => !saved.includes(k))]; };
+  const reviewBox = review.length ? `<div class="box review"><h3>Needs review <small>${review.length} · Trellus calls the tracker couldn't confidently match</small></h3>
+      ${review.map(r => {
+        const who = [r.company, r.name && r.name !== r.company ? r.name : "", fmtPhone(r.phone)].filter(Boolean).join(" · ");
+        const opts = accounts.slice().sort((a, b) => a.agency.localeCompare(b.agency))
+          .map(a => `<option value="${a.id}" ${a.id === r.account_id ? "selected" : ""}>${esc(a.agency)}</option>`).join("");
+        return `<div class="item" data-sid="${esc(r.session_id)}">
+          <span class="pill" style="--c:var(--warn)"></span>
+          <div class="grow"><b>${esc(r.disposition)}</b> · ${esc(who || "Unknown")}
+            <div class="m">${fmtDateTime(r.started_at)} · ${esc(r.reason)}${r.notes ? " · " + esc(r.notes) : ""}</div></div>
+          <div class="acts">
+            ${r.suggested_agency ? `<button class="btn sm primary" data-rv="link" data-aid="${r.account_id}">Log on ${esc(r.suggested_agency)}</button>` : ""}
+            <select data-pick><option value="">Log on other agency…</option>${opts}</select>
+            <button class="btn sm" data-tx>Transcript ▾</button>
+            <button class="btn sm" data-rv="create">+ Add as lead</button>
+            <button class="btn sm" data-rv="dismiss">Dismiss</button>
+          </div></div>`;
+      }).join("")}</div>` : "";
+  $("#view").innerHTML = accounts.length === 0 && !review.length ? `<div class="box"><div class="empty" style="padding:40px">No accounts yet. Click <b>+ New lead</b> (or press N) after your next productive call.</div></div>` :
+    `<div class="today-grid">${reviewBox}${sectionOrder().map(k => sections[k]()).join("")}</div>`;
+  bindCards();
+  bindReview();
+  bindTodayDrag();
+  document.querySelectorAll("[data-task-open]").forEach(el => el.onclick = e => { if (!e.target.closest("[data-task-done]")) { openDrawer(+el.dataset.taskOpen); openTodos(); } });
+  document.querySelectorAll("[data-task-done]").forEach(cb => cb.onchange = async () => {
+    try { await api(`/tasks/${cb.dataset.taskDone}`, { method: "PATCH", body: { done: true } }); toast("Done ✓"); load(); }
+    catch (e) { toast(e.message); cb.checked = false; }
+  });
+}
+
+// Follow-ups tab: drag agencies up/down inside a box, or drag a box by its title to move it.
+function bindTodayDrag() {
+  const grid = document.querySelector(".today-grid"); if (!grid) return;
+  grid.querySelectorAll(".box[data-box]").forEach(bx => {
+    const h = bx.querySelector("h3"), items = bx.querySelector(".items");
+    h.onmousedown = () => { bx.draggable = true; };
+    h.onmouseup = () => { bx.draggable = false; };
+    bx.ondragstart = e => {
+      if (e.target !== bx) return;
+      e.dataTransfer.setData("text/plain", bx.dataset.box); e.dataTransfer.effectAllowed = "move";
+      drag = { el: bx, kind: "box" }; setTimeout(() => bx.classList.add("dragging"));
+    };
+    bx.ondragend = e => {
+      if (e.target !== bx) return;
+      bx.draggable = false; bx.classList.remove("dragging");
+      if (drag && !drag.dropped) render();
+      drag = null;
+    };
+    items.ondragover = e => {
+      if (drag?.kind !== "item" || drag.el.parentNode !== items) return; // agencies stay in their own box
+      e.preventDefault(); e.stopPropagation();
+      const before = dropBefore(items, ".item", e.clientX, e.clientY);
+      if (before !== drag.el.nextSibling) items.insertBefore(drag.el, before);
+    };
+    items.ondrop = async e => {
+      if (drag?.kind !== "item" || drag.el.parentNode !== items) return;
+      e.preventDefault(); e.stopPropagation(); drag.dropped = true;
+      await saveOrder(`today:${bx.dataset.box}`, [...items.querySelectorAll(".item")].map(i => +i.dataset.id));
+    };
+  });
+  grid.ondragover = e => {
+    if (drag?.kind !== "box") return;
+    e.preventDefault();
+    const before = dropBefore(grid, ".box[data-box]", e.clientX, e.clientY, true);
+    if (before !== drag.el.nextSibling) grid.insertBefore(drag.el, before);
+  };
+  grid.ondrop = async e => {
+    if (drag?.kind !== "box") return;
+    e.preventDefault(); drag.dropped = true;
+    await saveOrder("sections", [...grid.querySelectorAll(".box[data-box]")].map(b => b.dataset.box));
+  };
+}
+
+function fmtPhone(p) { const d = String(p || "").replace(/\D/g, "").slice(-10); return d.length === 10 ? `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}` : (p || ""); }
+async function resolveReview(sid, body, msg) {
+  try { await api(`/review/${encodeURIComponent(sid)}`, { method: "POST", body }); toast(msg); await load(); loadToday(); }
+  catch (e) { toast(e.message); }
+}
+function bindReview() {
+  document.querySelectorAll(".review .item").forEach(el => {
+    const sid = el.dataset.sid;
+    el.querySelectorAll("[data-rv]").forEach(b => b.onclick = () => {
+      const a = b.dataset.rv;
+      if (a === "link") resolveReview(sid, { action: "link", account_id: +b.dataset.aid }, "Call logged");
+      if (a === "create") resolveReview(sid, { action: "create", next_follow_up: nextBizDay(2) }, "Added as a Follow Up lead");
+      if (a === "dismiss") resolveReview(sid, { action: "dismiss" }, "Dismissed");
+    });
+    el.querySelector("[data-tx]").onclick = e => toggleTranscript(el, e.target);
+    el.querySelector("[data-pick]").onchange = e => e.target.value && resolveReview(sid, { action: "link", account_id: +e.target.value }, "Call logged");
+  });
+}
+
+// ---------- Trellus transcript + recording ----------
+const mmss = t => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
+async function toggleTranscript(item, btn) {
+  const open = item.querySelector(".tx");
+  if (open) { open.querySelectorAll("audio").forEach(a => a.pause()); open.remove(); btn.textContent = "Transcript ▾"; return; }
+  btn.textContent = "Loading…";
+  const box = document.createElement("div"); box.className = "tx";
+  try {
+    const d = await api(`/calls/${encodeURIComponent(item.dataset.sid)}`);
+    // Trellus records your side and their side as separate tracks: play them together.
+    box.innerHTML = (d.audio.length ? `<div class="player"><button class="btn sm" data-play>▶ Play</button>
+        <input type="range" min="0" max="${Math.ceil(d.duration - d.offset) || 1}" value="0" step="1"><span>0:00 / ${mmss(d.duration - d.offset)}</span>
+        ${d.audio.map(u => `<audio preload="metadata" src="${esc(u)}"></audio>`).join("")}</div>`
+      : `<div class="hint" style="margin-bottom:6px">No recording available for this call.</div>`) +
+      (d.turns.map(t => `<div class="turn ${t.me ? "me" : ""}"><span class="who" data-at="${t.start}" title="Play from here">${t.me ? "You" : "Them"} ${mmss(t.start)}</span><span>${esc(t.text)}</span></div>`).join("")
+        || `<div class="hint">No transcript for this call.</div>`);
+    const tracks = [...box.querySelectorAll("audio")], range = box.querySelector("input[type=range]"), play = box.querySelector("[data-play]");
+    if (tracks.length) {
+      const lead = tracks[0];
+      const seek = t => tracks.forEach(a => { a.currentTime = Math.max(0, t); });
+      const setPlaying = on => { tracks.forEach(a => on ? a.play() : a.pause()); play.textContent = on ? "❚❚ Pause" : "▶ Play"; };
+      play.onclick = () => setPlaying(lead.paused);
+      range.oninput = () => seek(+range.value);
+      lead.onloadedmetadata = () => { range.max = Math.ceil(lead.duration); };
+      lead.ontimeupdate = () => { range.value = lead.currentTime; box.querySelector(".player span").textContent = `${mmss(lead.currentTime)} / ${mmss(lead.duration || d.duration)}`; };
+      lead.onended = () => setPlaying(false);
+      box.querySelectorAll("[data-at]").forEach(w => w.onclick = () => {
+        seek(+w.dataset.at - d.offset); setPlaying(true);
+      });
+    }
+  } catch (e) { box.innerHTML = `<div class="hint">Couldn't load from Trellus: ${esc(e.message)}</div>`; }
+  item.appendChild(box); btn.textContent = "Transcript ▴";
+}
+
+// ---------- Trellus sync status ----------
+function ago(iso) { const m = Math.round((Date.now() - new Date(iso)) / 6e4); return m < 1 ? "just now" : m < 60 ? `${m}m ago` : `${Math.round(m / 60)}h ago`; }
+async function loadSync() {
+  const s = await api("/sync").catch(() => null);
+  const b = $("#syncBtn");
+  if (!s || !s.enabled) { b.hidden = true; return; }
+  b.hidden = false;
+  b.classList.toggle("err", !!s.last_error);
+  b.textContent = s.running ? "Trellus: syncing…" : s.last_error ? "Trellus: sync failed ⚠" : s.last_sync ? `Trellus ✓ ${ago(s.last_sync)}` : "Trellus: starting…";
+  b.title = s.last_error ? `Last error: ${s.last_error}\nClick to retry.` : "Calls, dials and connects sync from Trellus every 5 minutes. Click to sync now.";
+  document.querySelectorAll(".counter").forEach(c => c.title = "Filled in automatically from Trellus. You can still type a number, but the next sync will replace it.");
+  if (s.review_count !== review.length) load();
+}
+$("#syncBtn").onclick = async () => {
+  $("#syncBtn").textContent = "Trellus: syncing…";
+  try { await api("/sync", { method: "POST" }); toast("Synced with Trellus"); } catch (e) { toast(e.message); }
+  await Promise.all([load(), loadToday(), loadSync()]);
+};
+
+// ---------- Email sync status ----------
+let mailSyncedAt = null;
+async function loadMail() {
+  const s = await api("/email-sync").catch(() => null);
+  const b = $("#mailBtn");
+  if (!s || !s.enabled) { b.hidden = true; return; }
+  b.hidden = false;
+  b.classList.toggle("err", !!s.last_error);
+  b.textContent = s.running ? "Email: syncing…" : s.last_error ? "Email: sync failed ⚠" : s.last_sync ? `Email ✓ ${ago(s.last_sync)}` : "Email: starting…";
+  b.title = s.last_error ? `Last error: ${s.last_error}\nClick to retry.` : "Emails with your agencies are logged on their cards every 5 minutes, and cards move to Info Sent / Submission In / Quoted when the email shows it. Click to sync now.";
+  if (s.last_sync && s.last_sync !== mailSyncedAt) { if (mailSyncedAt) { load(); loadToday(); } mailSyncedAt = s.last_sync; }
+}
+$("#mailBtn").onclick = async () => {
+  $("#mailBtn").textContent = "Email: syncing…";
+  try { const r = await api("/email-sync", { method: "POST" }); toast(r.skipped ? "Email sync already running" : `Email synced: ${r.logged} logged, ${r.moved} moved`); } catch (e) { toast(e.message); }
+  await Promise.all([load(), loadToday(), loadMail()]);
+};
+
+// ---------- drawer ----------
+function field(k, label, opts = {}) {
+  const v = esc(current?.[k] ?? opts.def ?? "");
+  const cls = opts.full ? "field full" : "field";
+  if (opts.type === "textarea") return `<div class="${cls}"><label>${label}</label><textarea name="${k}" placeholder="${opts.ph || ""}">${v}</textarea></div>`;
+  return `<div class="${cls}"><label>${label}</label><input name="${k}" type="${opts.type || "text"}" value="${v}" placeholder="${opts.ph || ""}"></div>`;
+}
+
+// Only http(s) links are opened, so a stray paste can't run anything.
+const safeUrl = u => { u = String(u || "").trim(); if (!u) return ""; if (!/^https?:\/\//i.test(u)) u = "https://" + u; try { return new URL(u).href; } catch { return ""; } };
+function linkField(k, label, ph, full) {
+  const v = current?.[k] || "";
+  return `<div class="field${full ? " full" : ""}"><label>${label}</label>
+    <div class="linkrow"><input name="${k}" type="url" value="${esc(v)}" placeholder="${ph}">
+    <a class="btn sm" data-open="${k}" target="_blank" rel="noopener" href="${esc(safeUrl(v)) || "#"}" ${safeUrl(v) ? "" : "hidden"}>Open ↗</a></div></div>`;
+}
+function linkTags(a) {
+  return [["twenty_url", "Twenty"], ["atlas_url", "Atlas"]].map(([k, l]) => safeUrl(a[k])
+    ? `<a class="tag link" target="_blank" rel="noopener" href="${esc(safeUrl(a[k]))}" onclick="event.stopPropagation()">${l} ↗</a>` : "").join("");
+}
+
+function openDrawer(id) {
+  current = id ? accounts.find(a => a.id === id) : null;
+  const isNew = !current;
+  $("#dTitle").textContent = isNew ? "New lead" : current.agency;
+  const stage = current?.stage || "lead";
+  $("#dBody").innerHTML = `
+    <div class="hint" id="callPreview" style="margin-bottom:12px"></div>
+    <div class="stepper" id="stepper">${STAGES.map((s, i) => {
+      const idx = STAGES.findIndex(x => x.id === stage);
+      return `<button type="button" data-s="${s.id}" style="--c:var(--s-${s.id})" class="${s.id === stage ? "on" : (i < idx && stage !== "lost" ? "past" : "")}" title="${s.sub}">${s.label}</button>`;
+    }).join("")}</div>
+    <form id="form" class="grid2" autocomplete="off">
+      <input type="hidden" name="stage" value="${stage}">
+      ${field("agency", "Agency *", { full: true, ph: "e.g. Smith & Co Insurance" })}
+      ${field("contact", "Contact")}
+      ${field("title", "Title", { ph: "Producer, Principal…" })}
+      ${field("email", "Email", { type: "email" })}
+      ${field("phone", "Phone", { type: "tel" })}
+      ${field("state", "State", { ph: "TX" })}
+      ${field("hours", "Opening hours", { ph: "Mon-Fri 9-5 (default)" })}
+      <div class="field"><label>Time zone</label><select name="tz">
+        <option value="">Auto (from phone / state)</option>
+        ${Object.entries(TZ).map(([z, l]) => `<option value="${z}" ${current?.tz === z ? "selected" : ""}>${l}: ${z.split("/")[1].replace("_", " ")}</option>`).join("")}
+      </select></div>
+      ${field("lines", "Lines / class", { ph: "GL, WC, BOP…" })}
+      <div class="field"><label>Next follow-up</label><input name="next_follow_up" type="date" value="${esc(current?.next_follow_up ?? (isNew ? nextBizDay(2) : ""))}">
+        <div class="quick">${[["Tmrw", nextBizDay(1)], ["+3d", nextBizDay(3)], ["+1w", addDays(7)], ["+2w", addDays(14)], ["Clear", ""]].map(([l, d]) => `<button type="button" class="btn sm" data-fu="${d}">${l}</button>`).join("")}</div></div>
+      ${field("premium", "Quoted / bound premium", { ph: "$" })}
+      ${linkField("twenty_url", "Twenty (CRM) link", "Paste the Twenty record link")}
+      ${linkField("atlas_url", "Atlas link", "Paste the Atlas link")}
+      <div class="field full"><label class="hint" title="Tick for an account you took over that was already in this stage (e.g. an existing quote or active partner). It stays on the board but only counts in your stats once it moves forward."><input type="checkbox" name="inherited_flag" ${current?.inherited_stage ? "checked" : ""}> Inherited account: already ${current?.inherited_stage ? `in ${S[current.inherited_stage].label} when I took it over` : "in this stage when I took it over"} (not counted as today's work)</label></div>
+      ${linkField("website", "Website", "e.g. smithinsurance.com", true)}
+      ${field("notes", "Notes", { type: "textarea", full: true, ph: "Appetite, carriers they use, who else to talk to…" })}
+      ${field("gaps", "Asked for, we don't have", { type: "textarea", full: true, ph: "e.g. Commercial auto market" })}
+      ${isNew ? field("first_note", "Call note", { type: "textarea", full: true, ph: "What happened on the call?" }) : ""}
+    </form>
+    ${isNew ? "" : `
+      <div class="section-t">Log activity</div>
+      <div class="logbox">
+        <textarea id="logBody" placeholder="Called, left VM, sent follow-up on thread…"></textarea>
+        <div class="row2">
+          <select id="logKind"><option value="call">📞 Call</option><option value="vm">📟 Voicemail</option><option value="email">✉️ Email</option><option value="meeting">🤝 Meeting</option><option value="note">📝 Note</option></select>
+          <span class="hint">then follow up</span>
+          <select id="logFu"><option value="">keep date</option><option value="${nextBizDay(1)}">tomorrow</option><option value="${nextBizDay(2)}" selected>in 2 biz days</option><option value="${nextBizDay(3)}">in 3 biz days</option><option value="${addDays(7)}">in 1 week</option><option value="${addDays(14)}">in 2 weeks</option><option value="none">clear</option><option value="pick">pick a date…</option></select>
+          <input type="date" id="logFuDate" min="${todayStr()}" hidden style="border:1px solid var(--line);border-radius:6px;background:var(--panel);padding:3px 6px;cursor:pointer">
+          <span class="spacer"></span><button class="btn primary sm" id="logBtn">Log (⌘↵)</button>
+        </div>
+      </div>
+      <ul class="timeline" id="timeline"><li class="hint">Loading…</li></ul>`}
+  `;
+  const next = NEXT[stage];
+  $("#dFoot").innerHTML = isNew
+    ? `<button class="btn primary" id="saveBtn">Create</button><span class="spacer"></span>`
+    : `<button class="btn primary" id="saveBtn">Save</button>
+       ${next ? `<button class="btn" id="advBtn">Move to ${S[next].label} →</button>` : ""}
+       <span class="spacer"></span>
+       ${stage !== "lost" ? `<button class="btn" id="lostBtn">Mark lost</button>` : ""}
+       <button class="btn danger" id="delBtn">Delete</button>`;
+
+  $("#stepper").onclick = async e => {
+    const b = e.target.closest("button"); if (!b) return;
+    if (isNew) { $("#form").stage.value = b.dataset.s; document.querySelectorAll("#stepper button").forEach(x => x.className = x === b ? "on" : ""); }
+    else await moveStage(current, b.dataset.s, true);
+  };
+  document.querySelectorAll("[data-fu]").forEach(b => b.onclick = () => { $("#form").next_follow_up.value = b.dataset.fu; });
+  // Clicking anywhere in the date box opens the calendar, not just the small icon.
+  const fuInput = $("#form").next_follow_up;
+  fuInput.style.cursor = "pointer";
+  fuInput.onclick = () => { try { fuInput.showPicker(); } catch {} };
+  document.querySelectorAll("[data-open]").forEach(a => {
+    const inp = $("#form")[a.dataset.open];
+    inp.oninput = () => { const u = safeUrl(inp.value); a.hidden = !u; a.href = u || "#"; };
+  });
+  const f = $("#form");
+  const preview = () => {
+    const probe = { phone: f.phone.value, state: f.state.value, hours: f.hours.value, tz: f.tz.value, id: current?.id };
+    const st = callStatus(probe);
+    $("#callPreview").innerHTML = st
+      ? `<span class="tag call ${st.level}">${esc(st.label)}</span> <span>${esc(st.title.split("\n").slice(1).join(" · "))}</span>`
+      : "Add a US phone number or state to see their local time and whether they're open.";
+  };
+  ["phone", "state", "hours", "tz"].forEach(k => f[k].addEventListener("input", preview));
+  drawerPreview = preview;
+  preview();
+  $("#saveBtn").onclick = save;
+  if ($("#advBtn")) $("#advBtn").onclick = async () => { await save(true); await moveStage(current, next, true); };
+  if ($("#lostBtn")) $("#lostBtn").onclick = () => moveStage(current, "lost", true);
+  if ($("#delBtn")) $("#delBtn").onclick = async () => {
+    if (!confirm(`Delete ${current.agency} and its history? This can't be undone, and it also removes this agency from your stats.\n\nTip: use "Mark lost" instead to keep your numbers accurate.`)) return;
+    await api(`/accounts/${current.id}`, { method: "DELETE" }); closeDrawer(); toast("Deleted"); load();
+  };
+  if ($("#logBtn")) {
+    $("#logBtn").onclick = logActivity;
+    // "pick a date…" shows a date box and opens the calendar straight away
+    const fuSel = $("#logFu"), fuDate = $("#logFuDate");
+    const openCal = () => { try { fuDate.showPicker(); } catch {} };
+    fuSel.onchange = () => {
+      fuDate.hidden = fuSel.value !== "pick";
+      if (fuSel.value === "pick") { fuDate.value ||= current.next_follow_up > todayStr() ? current.next_follow_up : nextBizDay(2); fuDate.focus(); openCal(); }
+    };
+    fuDate.onclick = openCal;
+    $("#logBody").onkeydown = e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) logActivity(); };
+    loadTimeline();
+  }
+  $("#form").onkeydown = e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) save(); };
+  closeTodos();
+  $("#todoBtn").hidden = isNew;
+  $("#todoBtn").onclick = openTodos;
+  $("#mTitle").textContent = isNew ? "To-dos" : `To-dos · ${current.agency}`;
+  if (!isNew) { $("#todoList").innerHTML = `<div class="hint">Loading…</div>`; $("#todoAdd").innerHTML = ""; paintTodoBtn(tasks.filter(t => t.account_id === current.id)); }
+  $("#scrim").classList.add("on"); $("#drawer").classList.add("on");
+  setTimeout(() => (isNew ? $("#form").agency : null)?.focus(), 50);
+}
+
+async function loadTimeline() {
+  const full = await api(`/accounts/${current.id}`);
+  renderTodos(full);
+  $("#timeline").innerHTML = full.activities.map(x => `<li data-i="${ICON[x.kind] || "•"}">
+      <div class="t"><span>${x.kind === "stage" ? "Stage change" : x.kind[0].toUpperCase() + x.kind.slice(1)} · ${fmtDateTime(x.created_at)}</span>${x.kind !== "stage" ? `<span><button data-edit="${x.id}">edit</button><button data-del="${x.id}">delete</button></span>` : ""}</div>
+      <div class="b">${x.kind === "stage" ? esc(x.body.replace(/\b(lead|info_sent|submission|quoted|active|lost)\b/g, m => S[m].label)) : esc(x.body)}</div></li>`).join("") || `<li class="hint">No activity yet.</li>`;
+  document.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => { await api(`/activities/${b.dataset.del}`, { method: "DELETE" }); loadTimeline(); });
+  document.querySelectorAll("[data-edit]").forEach(b => b.onclick = () => {
+    const x = full.activities.find(a => a.id === +b.dataset.edit), li = b.closest("li");
+    li.classList.add("editing");
+    li.querySelector(".t span:last-child").hidden = true;
+    const kinds = [["call", "📞 Call"], ["vm", "📟 Voicemail"], ["email", "✉️ Email"], ["meeting", "🤝 Meeting"], ["note", "📝 Note"]];
+    li.querySelector(".b").outerHTML = `<div class="edit"><textarea>${esc(x.body)}</textarea><div class="row2">
+      <select>${kinds.map(([k, l]) => `<option value="${k}" ${k === x.kind ? "selected" : ""}>${l}</option>`).join("")}</select>
+      <span class="hint">follow up</span><input type="date" data-fu value="${esc(current.next_follow_up || "")}" style="border:1px solid var(--line);border-radius:6px;background:var(--panel);padding:3px 6px;cursor:pointer">
+      <span class="spacer"></span><button class="btn sm" data-cancel>Cancel</button><button class="btn sm primary" data-save>Save (⌘↵)</button></div></div>`;
+    const ta = li.querySelector("textarea"), fuIn = li.querySelector("[data-fu]");
+    fuIn.onclick = () => { try { fuIn.showPicker(); } catch {} };
+    ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
+    const saveEdit = async () => {
+      try {
+        await api(`/activities/${x.id}`, { method: "PATCH", body: { body: ta.value, kind: li.querySelector("select").value } });
+        if (fuIn.value !== (current.next_follow_up || "")) {
+          await api(`/accounts/${current.id}`, { method: "PATCH", body: { next_follow_up: fuIn.value } });
+          current.next_follow_up = fuIn.value; $("#form").next_follow_up.value = fuIn.value; load();
+          toast(fuIn.value ? `Log updated · follow up ${fmtDate(fuIn.value)}` : "Log updated · follow-up cleared");
+        } else toast("Log updated");
+      }
+      catch (e) { toast(e.message); }
+      loadTimeline();
+    };
+    li.querySelector("[data-save]").onclick = saveEdit;
+    li.querySelector("[data-cancel]").onclick = loadTimeline;
+    ta.onkeydown = e => {
+      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); saveEdit(); }
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); loadTimeline(); }
+    };
+  });
+}
+
+// ---------- per-agency to-dos ----------
+let showDone = false;
+// One form for add and edit. Who / blocker fields tuck away on add until you ask for them.
+function todoFormHTML(t, people) {
+  const v = k => esc(t?.[k] || "");
+  const more = !!t || (localGet("todoMore") === "1");
+  return `<div class="todo-form" data-tid="${t?.id || ""}">
+    <div class="full"><input data-k="title" value="${v("title")}" placeholder="What needs doing? e.g. Get loss runs for the GL quote"></div>
+    <div><label>Due</label><input data-k="due" type="date" value="${v("due")}" style="cursor:pointer">
+      <div class="quick">${[["Today", todayStr()], ["Tmrw", nextBizDay(1)], ["+3d", nextBizDay(3)], ["+1w", addDays(7)], ["None", ""]].map(([l, d]) => `<button type="button" class="btn sm" data-due="${d}">${l}</button>`).join("")}</div></div>
+    <div><label>Follow up with</label><input data-k="follow_up_with" list="todoPeople" value="${v("follow_up_with")}" placeholder="${esc(current?.contact || "Who to chase")}"></div>
+    <div class="todo-more" ${more ? "" : "hidden"}>
+      <div><label>Blocker</label><input data-k="blocker" value="${v("blocker")}" placeholder="What's in the way?"></div>
+      <div><label>Who can unblock it</label><input data-k="blocker_owner" list="todoPeople" value="${v("blocker_owner")}" placeholder="e.g. Underwriting, my manager"></div>
+    </div>
+    <div class="row2">
+      ${t ? "" : `<button type="button" class="btn sm" data-more>${more ? "− Hide blocker" : "+ Blocker"}</button>`}
+      <span class="spacer"></span>
+      ${t ? `<button type="button" class="btn sm" data-cancel>Cancel</button>` : ""}
+      <button type="button" class="btn sm primary" data-save>${t ? "Save" : "Add to-do"} (↵)</button>
+    </div>
+    <datalist id="todoPeople">${people.map(p => `<option value="${esc(p)}">`).join("")}</datalist>
+  </div>`;
+}
+function bindTodoForm(box, t) {
+  const get = k => box.querySelector(`[data-k="${k}"]`);
+  const dueIn = get("due");
+  dueIn.onclick = () => { try { dueIn.showPicker(); } catch {} };
+  box.querySelectorAll("[data-due]").forEach(b => b.onclick = () => { dueIn.value = b.dataset.due; });
+  box.querySelector("[data-more]")?.addEventListener("click", e => {
+    const m = box.querySelector(".todo-more"); m.hidden = !m.hidden;
+    localSet("todoMore", m.hidden ? "0" : "1");
+    e.target.textContent = m.hidden ? "+ Blocker" : "− Hide blocker";
+    if (!m.hidden) get("blocker").focus();
+  });
+  const submit = async () => {
+    const body = Object.fromEntries(["title", "due", "follow_up_with", "blocker", "blocker_owner"].map(k => [k, get(k).value.trim()]));
+    if (!body.title) { get("title").focus(); toast("Type what needs doing"); return; }
+    try {
+      await api(t ? `/tasks/${t.id}` : `/accounts/${current.id}/tasks`, { method: t ? "PATCH" : "POST", body });
+      toast(t ? "To-do updated" : "To-do added");
+      await loadTimeline(); load();
+      if (!t && todosOpen()) $("#todoAdd [data-k=title]")?.focus();
+    } catch (e) { toast(e.message); }
+  };
+  box.querySelector("[data-save]").onclick = submit;
+  box.querySelector("[data-cancel]")?.addEventListener("click", () => loadTimeline());
+  box.querySelectorAll("input").forEach(i => i.onkeydown = e => {
+    if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); submit(); }
+    if (e.key === "Escape" && t) { e.preventDefault(); e.stopPropagation(); loadTimeline(); }
+  });
+}
+function paintTodoBtn(open) {
+  const c = $("#todoBtn .count"), hot = open.some(t => t.blocker || (t.due && t.due <= todayStr()));
+  c.hidden = !open.length; c.textContent = open.length; c.classList.toggle("hot", hot);
+}
+const todosOpen = () => $("#todoModal").classList.contains("on");
+function openTodos() {
+  if (!current) return;
+  $("#mScrim").classList.add("on"); $("#todoModal").classList.add("on");
+  setTimeout(() => $("#todoAdd [data-k=title]")?.focus(), 60);
+}
+function closeTodos() { $("#mScrim").classList.remove("on"); $("#todoModal").classList.remove("on"); }
+function renderTodos(full) {
+  const list = full.tasks || [];
+  const open = list.filter(t => !t.done_at), done = list.filter(t => t.done_at);
+  paintTodoBtn(open);
+  // Name suggestions: this agency's contact plus everyone you've named on any to-do here or elsewhere.
+  const people = [...new Set([full.contact, ...list.flatMap(t => [t.follow_up_with, t.blocker_owner]), ...tasks.flatMap(t => [t.follow_up_with, t.blocker_owner])].filter(Boolean))];
+  const row = t => `<div class="todo ${t.done_at ? "done" : ""} ${t.blocker && !t.done_at ? "blocked" : ""}" data-tid="${t.id}">
+      <input type="checkbox" ${t.done_at ? "checked" : ""} data-toggle title="${t.done_at ? "Reopen" : "Mark done"}">
+      <div class="grow">
+        <div class="tt">${esc(t.title)}</div>
+        ${t.follow_up_with ? `<div class="who">👤 Follow up with ${esc(t.follow_up_with)}</div>` : ""}
+        ${t.blocker ? `<div class="blk">⛔ Blocked: ${esc(t.blocker)}${t.blocker_owner ? ` → <b>${esc(t.blocker_owner)}</b> can unblock` : ""}</div>` : ""}
+        ${t.done_at ? `<div class="who">Done ${fmtDateTime(t.done_at)}</div>` : ""}
+      </div>
+      <div class="acts">${dueTag(t)}${t.done_at ? "" : `<button data-tedit>edit</button>`}<button data-tdel>delete</button></div>
+    </div>`;
+  $("#todoList").innerHTML = (open.map(row).join("") || `<div class="hint">No open to-dos.</div>`) +
+    (done.length ? `<button class="btn sm" id="toggleDone" style="align-self:flex-start">${showDone ? "Hide" : "Show"} ${done.length} done</button>${showDone ? done.map(row).join("") : ""}` : "");
+  $("#todoAdd").innerHTML = todoFormHTML(null, people);
+  bindTodoForm($("#todoAdd .todo-form"), null);
+  $("#toggleDone")?.addEventListener("click", () => { showDone = !showDone; renderTodos(full); });
+  $("#todoList").querySelectorAll(".todo").forEach(el => {
+    const t = list.find(x => x.id === +el.dataset.tid);
+    el.querySelector("[data-toggle]").onchange = async e => {
+      try { await api(`/tasks/${t.id}`, { method: "PATCH", body: { done: e.target.checked } }); toast(e.target.checked ? "Done ✓" : "Reopened"); }
+      catch (err) { toast(err.message); }
+      await loadTimeline(); load();
+    };
+    el.querySelector("[data-tdel]").onclick = async () => {
+      await api(`/tasks/${t.id}`, { method: "DELETE" }); toast("To-do deleted"); await loadTimeline(); load();
+    };
+    el.querySelector("[data-tedit]")?.addEventListener("click", () => {
+      el.outerHTML = todoFormHTML(t, people);
+      const box = $(`#todoList .todo-form[data-tid="${t.id}"]`);
+      bindTodoForm(box, t); box.querySelector("[data-k=title]").focus();
+    });
+  });
+}
+
+function formData() {
+  const f = Object.fromEntries(new FormData($("#form")).entries());
+  // Keep the original baseline stage once set; otherwise the card's current stage is the baseline.
+  f.inherited_stage = f.inherited_flag ? (current?.inherited_stage || current?.stage || f.stage) : "";
+  delete f.inherited_flag;
+  return f;
+}
+
+async function save(silent) {
+  const data = formData();
+  if (!data.agency?.trim()) { $("#form").agency.focus(); toast("Agency name is required"); return; }
+  try {
+    if (current) {
+      delete data.stage;
+      const r = await api(`/accounts/${current.id}`, { method: "PATCH", body: data });
+      Object.assign(current, r);
+      if (silent !== true) { toast("Saved"); closeDrawer(); }
+    } else {
+      const r = await api("/accounts", { method: "POST", body: data });
+      toast(`Added ${r.agency}`); closeDrawer();
+    }
+    load();
+  } catch (e) { toast(e.message); }
+}
+
+async function moveStage(a, stage, reopen) {
+  const patch = { stage };
+  if (stage === "info_sent" && !a.next_follow_up) patch.next_follow_up = nextBizDay(STALE.info_sent);
+  if (stage === "active" || stage === "lost") patch.next_follow_up = "";
+  await api(`/accounts/${a.id}`, { method: "PATCH", body: patch });
+  toast(`${a.agency} → ${S[stage].label}`);
+  await load();
+  if (reopen) openDrawer(a.id);
+}
+
+async function logActivity() {
+  const body = $("#logBody").value.trim();
+  if (!body) { $("#logBody").focus(); return; }
+  const payload = { kind: $("#logKind").value, body };
+  let fu = $("#logFu").value;
+  if (fu === "pick") { fu = $("#logFuDate").value; if (!fu) { $("#logFuDate").focus(); toast("Pick a follow-up date"); return; } }
+  if (fu) payload.next_follow_up = fu === "none" ? "" : fu;
+  await api(`/accounts/${current.id}/activities`, { method: "POST", body: payload });
+  $("#logBody").value = "";
+  if (fu) $("#form").next_follow_up.value = payload.next_follow_up;
+  toast("Logged");
+  await load();
+  current = accounts.find(a => a.id === current.id);
+  loadTimeline();
+}
+
+function closeDrawer() { closeTodos(); $("#scrim").classList.remove("on"); $("#drawer").classList.remove("on"); current = null; }
+
+// ---------- wiring ----------
+$("#tabs").onclick = e => { const b = e.target.closest("button"); if (!b) return; view = b.dataset.v; localSet("view", view); render(); };
+$("#q").oninput = () => { if (view === "today" && $("#q").value) view = "list"; render(); };
+$("#showLost").onchange = render;
+$("#newBtn").onclick = () => openDrawer(null);
+$("#dClose").onclick = closeDrawer;
+$("#mClose").onclick = closeTodos;
+$("#mScrim").onclick = closeTodos;
+$("#scrim").onclick = closeDrawer;
+document.addEventListener("keydown", e => {
+  const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
+  if (e.key === "Escape") { if (todosOpen()) { e.preventDefault(); closeTodos(); return; } if ($("#drawer").classList.contains("on")) closeDrawer(); else if (typing) document.activeElement.blur(); }
+  if (typing || e.metaKey || e.ctrlKey) return;
+  if (e.key === "n") { e.preventDefault(); openDrawer(null); }
+  if (e.key.toLowerCase() === "t" && current && $("#drawer").classList.contains("on")) { e.preventDefault(); openTodos(); return; }
+  if (e.key === "/") { e.preventDefault(); $("#q").focus(); }
+  if (e.key.toLowerCase() === "d") { e.preventDefault(); $("#dialIn").focus(); }
+  if (e.key.toLowerCase() === "c") { e.preventDefault(); $("#connIn").focus(); }
+  const views = { 1: "today", 2: "board", 3: "list", 4: "stats" };
+  if (views[e.key]) { view = views[e.key]; localSet("view", view); render(); }
+});
+// refresh "today" math (and the dial counter after midnight) if the tab is left open
+setInterval(() => { loadToday(); render(); }, 5 * 60 * 1000);
+let resizeT; window.addEventListener("resize", () => { clearTimeout(resizeT); resizeT = setTimeout(() => view === "stats" && renderPerformance(), 200); });
+setInterval(() => { loadSync(); loadMail(); loadToday(); }, 60 * 1000);
+load(); loadToday(); loadSync(); loadMail();
+</script>
+</body>
+</html>
