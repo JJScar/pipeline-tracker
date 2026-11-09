@@ -38,8 +38,15 @@ STOP = {"insurance", "ins", "agency", "agencies", "group", "inc", "llc", "co", "
         "services", "service", "the", "and", "of", "associates", "brokerage", "brokers", "broker",
         "financial", "agcy", "grp"}
 
-_lock = threading.Lock()
-status = {"enabled": False, "last_sync": None, "last_error": None, "running": False}
+# One status + lock per user, so a team's syncs never mix. "local" is the single-user Mac setup.
+_locks, _statuses = {}, {}
+
+
+def status_for(user="local"):
+    return _statuses.setdefault(user, {"enabled": False, "last_sync": None, "last_error": None, "running": False})
+
+
+status = status_for("local")  # kept for scripts that read it directly
 
 
 # ---------- config ----------
@@ -260,12 +267,13 @@ def recompute_daily(c, days):
         c.execute("UPDATE daily SET dials = ?, connects = ? WHERE date = ?", (r["dials"], r["connects"] or 0, day))
 
 
-def sync_once(db, env):
+def sync_once(db, env, user="local"):
     """Run one sync. db is a zero-arg function returning a sqlite3 connection (Row factory)."""
     key, email = env.get("TRELLUS_API_KEY"), env.get("TRELLUS_USER_EMAIL")
     if not key or not email:
-        raise RuntimeError("Set TRELLUS_API_KEY and TRELLUS_USER_EMAIL in .env")
-    if not _lock.acquire(blocking=False):
+        raise RuntimeError("Add your Trellus API key and Trellus email in Settings")
+    status, lock = status_for(user), _locks.setdefault(user, threading.Lock())
+    if not lock.acquire(blocking=False):
         return {"skipped": "a sync is already running"}
     status["running"] = True
     try:
@@ -320,26 +328,7 @@ def sync_once(db, env):
         raise
     finally:
         status["running"] = False
-        _lock.release()
-
-
-def start_loop(db, env, log=print):
-    if not env.get("TRELLUS_API_KEY"):
-        log("Trellus sync off (no TRELLUS_API_KEY in .env)")
-        return
-    status["enabled"] = True
-
-    def loop():
-        while True:
-            try:
-                r = sync_once(db, env)
-                log(f"[{datetime.now():%H:%M}] Trellus sync: {r}")
-            except Exception as e:
-                log(f"[{datetime.now():%H:%M}] Trellus sync failed: {e}")
-            time.sleep(INTERVAL)
-
-    threading.Thread(target=loop, daemon=True, name="trellus-sync").start()
-    log("Trellus sync on (every 5 min)")
+        lock.release()
 
 
 # ---------- review queue ----------

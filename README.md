@@ -6,24 +6,30 @@ A local dashboard for tracking broker-agency outbound, from first call to appoin
 **Stop it:** press Ctrl+C in that terminal window.
 **Your data:** `pipeline.db` in this folder (SQLite). Back it up by copying the file. Use **Export CSV** to get a spreadsheet.
 
-## Set it up on your Mac (team)
-You only need Python 3, which comes with macOS. Nothing else to install.
-1. Clone the repo, then open a terminal in the folder:
-   ```
-   git clone <repo-url> pipeline-tracker
-   cd pipeline-tracker
-   cp .env.example .env
-   ```
-2. Open `.env` and fill in **your own** Trellus API key, Trellus email and Google app password. Leave a line blank to skip that sync.
-3. Run `make start` (or double-click `start.command`), then open http://localhost:8765.
+## Using it with the team
+The tracker runs on the company platform, and you sign in there with your work email. Then:
+1. Click **⚙ Settings** (top right). It opens by itself the first time.
+2. **Trellus:** paste your Trellus API key (ask your team lead if you don't have it). Click **Test**, then **Save**.
+3. **Work email:** follow the 3 steps shown to create a Google app password, paste it, click **Test**, then **Save**.
 
-Your tracker starts empty. A fresh `pipeline.db` is created on first run.
+That's it. Your calls and emails start logging on your agency cards within a few minutes. Only you can see your pipeline and your keys. Managers see a **Team** tab with everyone's numbers, and can open anyone's pipeline read-only.
+
+Setting the tracker up on the platform is covered in **[DEPLOY.md](DEPLOY.md)**.
+
+## Running it on your own Mac (optional)
+You only need Python 3, which comes with macOS.
+```
+git clone https://github.com/JJScar/pipeline-tracker
+cd pipeline-tracker
+make start
+```
+Then open http://localhost:8765 and add your keys under **⚙ Settings**. Your tracker starts empty, and a fresh `pipeline.db` is created on first run. A `.env` file (see `.env.example`) still works too.
 
 ## Privacy: what's shared and what isn't
 - **Shared in GitHub:** only the app's code and this README.
-- **Never shared:** your clients, contacts, notes, calls, emails, to-dos and stats. They live only in `pipeline.db` on your own Mac. Your keys and passwords live only in `.env`.
-- `.gitignore` blocks `*.db`, `.env`, `backups/`, logs and CSV exports, so `git add .` can't pick them up by accident. Don't remove those lines, and never paste client data or keys into code or README files.
-- The tracker only listens on your own computer (127.0.0.1). Nobody else on the network can open it.
+- **Never shared:** your clients, contacts, notes, calls, emails, to-dos, stats and keys. On your Mac they live in `pipeline.db` (and `.env` if you use one). On the team server each person has their own database that only they can open.
+- `.gitignore` blocks `*.db`, `.env`, `data/`, `backups/`, logs and CSV exports, so `git add .` can't pick them up by accident. Don't remove those lines, and never paste client data or keys into code or README files.
+- On your Mac the tracker only listens on your own computer (127.0.0.1), so nobody else on the network can open it.
 
 ## Stages
 1. **Follow Up**: the outbound call went well and needs a follow-up
@@ -64,7 +70,7 @@ Open an agency and click **☐ To-dos** at the top right, next to Close (or pres
 - Your order is saved in `pipeline.db`. New cards show at the top of their list until you place them.
 
 ## Shortcuts
-`N` new lead · `/` search · `D` / `C` jump to the dials / connects box · `1`–`4` switch to Follow-ups / Board / List / Stats · `T` to-dos (in an open agency) · `Esc` close · `⌘↵` save or log
+`N` new lead · `/` search · `D` / `C` jump to the dials / connects box · `1`–`4` switch to Follow-ups / Board / List / Stats · `T` to-dos (in an open agency) · `,` settings · `5` team (managers) · `Esc` close · `⌘↵` save or log
 
 Stale flags: Follow Up after 7 days, Info Sent after 4, Submission after 2, Quoted after 7.
 To change them, edit `STALE` in `static/index.html`.
@@ -76,7 +82,7 @@ Runs inside the tracker every 5 minutes (only reads from Trellus, never writes t
 - **Needs review** (top of Follow-ups) lists unclear matches and "Interested" calls for agencies you haven't added yet. Each one can be logged on an agency, added as a new lead, or dismissed.
 - Click **Transcript** on a Needs review item to read the call (You / Them) and play the recording. Click a line's time to play from there. It's loaded from Trellus when you click, and recordings past Trellus's retention period won't play.
 - Conversations with no match aren't shown but are kept, and get logged automatically once you add that agency.
-- Config is in `.env` (`TRELLUS_API_KEY`, `TRELLUS_USER_EMAIL`). Code is in `trellus_sync.py`. A backup from before the sync was added is in `backups/`.
+- Connect it under **⚙ Settings** (or `TRELLUS_API_KEY` / `TRELLUS_USER_EMAIL` in `.env` on your Mac). Code is in `trellus_sync.py`. A backup from before the sync was added is in `backups/`.
 
 ## Email sync
 Runs inside the tracker every 5 minutes. It only reads your work mailbox: nothing is sent, moved, deleted or marked read. Click **Email ✓** in the header to sync now.
@@ -88,7 +94,7 @@ Runs inside the tracker every 5 minutes. It only reads your work mailbox: nothin
 - Cards never move backwards, and never to Appointed or Lost. Only emails newer than a card's last stage change can move it, so if you drag a card back by hand it stays there. The timeline says "moved … automatically" when an email did it.
 - An email that fits two agencies (same domain) is skipped. Emails from agencies that aren't in the tracker yet are skipped too, and aren't picked up later. Log those by hand.
 - The first sync goes back 14 days.
-- Config is in `.env`: `GOOGLE_APP_PASSWORD` or `EMAIL_APP_PASSWORD` (a Google app password), plus `EMAIL_ADDRESS` if it's different from your Trellus email. Code is in `email_sync.py`. A backup from before the sync was added is in `backups/`.
+- Connect it under **⚙ Settings** (or `GOOGLE_APP_PASSWORD` and `EMAIL_ADDRESS` in `.env` on your Mac). Code is in `email_sync.py`. A backup from before the sync was added is in `backups/`.
 
 ## Daily summary
 Run `/daily-summary` in Claude Code from this folder (or `/daily-summary 2026-11-03` for another day). It syncs Trellus, runs `daily_report.py` (read-only on `pipeline.db`), and writes up the day: dials, connects, submissions, quotes, binds/appointments, plus an analysis of where calls died, your best hours, and what to focus on tomorrow. To see just the raw numbers, run `python3 daily_report.py`.

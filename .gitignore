@@ -28,3 +28,6 @@ __pycache__/
 
 # Personal Claude Code settings (the shared daily-summary skill is still included)
 .claude/settings.local.json
+
+# Team mode data (one database per person). Never commit.
+data/

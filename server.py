@@ -5,16 +5,22 @@ No dependencies: Python stdlib + SQLite. Data lives in pipeline.db next to this 
 Run:  python3 server.py   then open http://localhost:8765
 """
 import csv
+import hashlib
+import hmac
+import imaplib
 import io
 import json
+import os
 import re
 import sqlite3
 import sys
+import threading
+import time
 import webbrowser
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import email_sync
 import trellus_sync
@@ -23,7 +29,31 @@ ROOT = Path(__file__).resolve().parent
 DB_PATH = ROOT / "pipeline.db"
 STATIC = ROOT / "static"
 ENV = trellus_sync.load_env(ROOT / ".env")
-PORT = next((int(a) for a in sys.argv[1:] if a.isdigit()), 8765)
+
+
+def _cfg(key, default=""):
+    """Server setting: a real environment variable wins, then .env, then the default."""
+    return (os.environ.get(key) or ENV.get(key) or default).strip()
+
+
+# ---------- deployment mode ----------
+# local  (default): one person on their own Mac. No login, data in ./pipeline.db, only reachable from this computer.
+# header (hosted):  behind the company platform, which signs people in and tells us who they are in a request
+#                   header. Each person gets their own database; managers (ADMIN_EMAILS) get a read-only team view.
+MODE = _cfg("AUTH_MODE", "local").lower()
+HOSTED = MODE == "header"
+HOST = _cfg("HOST", "0.0.0.0" if HOSTED else "127.0.0.1")
+PORT = next((int(a) for a in sys.argv[1:] if a.isdigit()), int(_cfg("PORT", "8765")))
+DATA_DIR = Path(_cfg("DATA_DIR", str(ROOT / "data"))).resolve()
+USER_HEADER = _cfg("USER_HEADER", "X-User-Email")
+SECRET_HEADER = _cfg("PROXY_SECRET_HEADER", "X-Proxy-Secret")
+PROXY_SECRET = _cfg("PROXY_SECRET")
+ADMINS = {e.strip().lower() for e in _cfg("ADMIN_EMAILS").split(",") if e.strip()}
+DOMAINS = {d.strip().lower().lstrip("@") for d in _cfg("ALLOWED_EMAIL_DOMAINS").split(",") if d.strip()}
+# A Trellus API key can see teammates' calls, so on the shared server people may only sync their own Trellus email.
+LOCK_TRELLUS_EMAIL = HOSTED and _cfg("ALLOW_OTHER_TRELLUS_EMAIL").lower() not in ("1", "true", "yes")
+SYNC_EVERY = 5 * 60
+EMAIL_RE = re.compile(r"[a-z0-9._%+'-]+@[a-z0-9.-]+\.[a-z]{2,}")
 
 STAGES = ["lead", "info_sent", "submission", "quoted", "active", "lost"]
 FIELDS = [
@@ -39,15 +69,33 @@ def now():
     return datetime.now().isoformat(timespec="seconds")
 
 
-def db():
-    conn = sqlite3.connect(DB_PATH)
+# Which person's database this request (thread) works on. Set by Handler._identify.
+_ctx = threading.local()
+
+
+def db(path=None):
+    path = path or getattr(_ctx, "db_path", None) or (None if HOSTED else DB_PATH)
+    if path is None:
+        raise RuntimeError("no signed-in user for this request")
+    conn = sqlite3.connect(path, timeout=15)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
-def init_db():
-    with db() as c:
+_ready, _ready_lock = set(), threading.Lock()
+
+
+def ensure_db(path):
+    with _ready_lock:
+        if str(path) not in _ready:
+            init_db(path)
+            _ready.add(str(path))
+    return path
+
+
+def init_db(path=None):
+    with db(path) as c:
         c.executescript(
             """
             CREATE TABLE IF NOT EXISTS accounts (
@@ -448,6 +496,225 @@ def set_order(key, ids):
     return orders
 
 
+# ---------- people (hosted mode) ----------
+def registry():
+    (DATA_DIR / "users").mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(DATA_DIR / "users.db", timeout=15)
+    conn.row_factory = sqlite3.Row
+    conn.execute("""CREATE TABLE IF NOT EXISTS users (email TEXT PRIMARY KEY, db_file TEXT NOT NULL,
+                    created_at TEXT NOT NULL, last_seen TEXT)""")
+    return conn
+
+
+def user_db_path(email, create=False):
+    """This person's own database file, or None. create=True signs up someone new on first visit."""
+    with registry() as c:
+        r = c.execute("SELECT db_file, last_seen FROM users WHERE email = ?", (email,)).fetchone()
+        ts = now()
+        if r:
+            fname = r["db_file"]
+            if create and (r["last_seen"] or "")[:16] != ts[:16]:
+                c.execute("UPDATE users SET last_seen = ? WHERE email = ?", (ts, email))
+        elif create:
+            slug = re.sub(r"[^a-z0-9]+", "-", email.split("@")[0]).strip("-")[:30] or "user"
+            fname = f"{slug}-{hashlib.sha256(email.encode()).hexdigest()[:10]}.db"
+            c.execute("INSERT INTO users (email, db_file, created_at, last_seen) VALUES (?,?,?,?)", (email, fname, ts, ts))
+        else:
+            return None
+    return ensure_db(DATA_DIR / "users" / fname)
+
+
+def list_users():
+    if not HOSTED:
+        return [{"email": "local", "path": DB_PATH, "last_seen": None}]
+    with registry() as c:
+        rows = c.execute("SELECT * FROM users ORDER BY email").fetchall()
+    return [{"email": r["email"], "path": ensure_db(DATA_DIR / "users" / r["db_file"]), "last_seen": r["last_seen"]}
+            for r in rows]
+
+
+# ---------- each person's keys (Settings) ----------
+# Saved in that person's own database. Secrets are never sent back to the browser, only "saved, ends in 1234".
+SECRET_SETTINGS = {"trellus_api_key": "TRELLUS_API_KEY", "google_app_password": "EMAIL_APP_PASSWORD"}
+PLAIN_SETTINGS = {"trellus_user_email": "TRELLUS_USER_EMAIL", "email_address": "EMAIL_ADDRESS"}
+ENV_KEYS = ("TRELLUS_API_KEY", "TRELLUS_USER_EMAIL", "EMAIL_ADDRESS", "EMAIL_APP_PASSWORD", "GOOGLE_APP_PASSWORD")
+
+
+def _settings_map(path=None):
+    with db(path) as c:
+        return {r["key"]: r["value"] for r in c.execute("SELECT key, value FROM settings")}
+
+
+def user_env(path=None, email=None):
+    """Keys for one person's syncs. On your Mac, .env still works as a fallback; on the server it's never used."""
+    s = _settings_map(path)
+    env = {} if HOSTED else {k: ENV[k] for k in ENV_KEYS if ENV.get(k)}
+    if not env.get("EMAIL_APP_PASSWORD") and env.get("GOOGLE_APP_PASSWORD"):
+        env["EMAIL_APP_PASSWORD"] = env["GOOGLE_APP_PASSWORD"]
+    for k, e in {**SECRET_SETTINGS, **PLAIN_SETTINGS}.items():
+        if s.get(k):
+            env[e] = s[k]
+    if HOSTED and email:
+        env.setdefault("TRELLUS_USER_EMAIL", email)
+        env.setdefault("EMAIL_ADDRESS", email)
+        if LOCK_TRELLUS_EMAIL:
+            env["TRELLUS_USER_EMAIL"] = email
+    return env
+
+
+def public_settings():
+    s, env = _settings_map(), user_env(email=_ctx.user if HOSTED else None)
+
+    def secret(k):
+        if s.get(k):
+            return {"set": True, "source": "settings", "hint": f"ends in {s[k][-4:]}" if k == "trellus_api_key" else ""}
+        if env.get(SECRET_SETTINGS[k]):
+            return {"set": True, "source": "env", "hint": "from the .env file"}
+        return {"set": False, "source": "", "hint": ""}
+
+    return {
+        "trellus_user_email": env.get("TRELLUS_USER_EMAIL", ""),
+        "trellus_email_locked": LOCK_TRELLUS_EMAIL,
+        "email_address": env.get("EMAIL_ADDRESS") or env.get("TRELLUS_USER_EMAIL", ""),
+        "trellus_api_key": secret("trellus_api_key"),
+        "google_app_password": secret("google_app_password"),
+        "dial_goal": int(s.get("dial_goal") or 0),
+    }
+
+
+def save_settings(payload):
+    s = _settings_map()
+    reset = set()
+    with db() as c:
+        def put(k, v):
+            c.execute("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", (k, v))
+
+        if "dial_goal" in payload:
+            put("dial_goal", str(max(0, int(payload["dial_goal"] or 0))))
+        for k in PLAIN_SETTINGS:
+            if k not in payload or (k == "trellus_user_email" and LOCK_TRELLUS_EMAIL):
+                continue
+            v = str(payload[k] or "").strip().lower()
+            if v and not EMAIL_RE.fullmatch(v):
+                raise ValueError(f"'{v}' doesn't look like an email address")
+            if v != s.get(k, ""):
+                put(k, v)
+                reset.add(k)
+        for k in SECRET_SETTINGS:
+            v = re.sub(r"\s", "", str(payload.get(k) or "")) if k == "google_app_password" else str(payload.get(k) or "").strip()
+            if v and v != s.get(k):
+                put(k, v)
+                reset.add(k)
+            if k in (payload.get("clear") or []):
+                c.execute("DELETE FROM settings WHERE key = ?", (k,))
+                reset.add(k)
+        # New Trellus account → look the user up again. New mailbox → start its 14-day look-back fresh.
+        if reset & {"trellus_api_key", "trellus_user_email"}:
+            c.execute("DELETE FROM settings WHERE key = 'trellus_user_id'")
+        if "email_address" in reset:
+            c.execute("DELETE FROM settings WHERE key IN ('email_last_uid', 'email_uidvalidity')")
+    if reset:
+        kick_sync(_ctx.user, _ctx.db_path or DB_PATH)
+    return public_settings()
+
+
+def test_connection(payload):
+    """Check keys before (or after) saving. Uses what's typed in the form, falling back to what's saved."""
+    env = user_env(email=_ctx.user if HOSTED else None)
+    service = payload.get("service")
+    if service == "trellus":
+        key = str(payload.get("trellus_api_key") or "").strip() or env.get("TRELLUS_API_KEY")
+        email = env["TRELLUS_USER_EMAIL"] if LOCK_TRELLUS_EMAIL else \
+            (str(payload.get("trellus_user_email") or "").strip() or env.get("TRELLUS_USER_EMAIL", ""))
+        if not key or not email:
+            return {"ok": False, "message": "Add your Trellus email and API key first."}
+        try:
+            trellus_sync.resolve_user_id(key, email)
+            return {"ok": True, "message": f"Connected to Trellus as {email}."}
+        except Exception as e:
+            msg = str(e)
+            if "HTTP 401" in msg or "HTTP 403" in msg:
+                msg = "Trellus didn't accept that API key."
+            return {"ok": False, "message": msg}
+    if service == "email":
+        me = (str(payload.get("email_address") or "").strip() or env.get("EMAIL_ADDRESS") or env.get("TRELLUS_USER_EMAIL", "")).lower()
+        pw = re.sub(r"\s", "", str(payload.get("google_app_password") or "")) or env.get("EMAIL_APP_PASSWORD", "")
+        if not me or not pw:
+            return {"ok": False, "message": "Add your work email and Google app password first."}
+        try:
+            M = imaplib.IMAP4_SSL(email_sync.HOST, timeout=30)
+            try:
+                M.login(me, pw)
+            finally:
+                try:
+                    M.logout()
+                except Exception:
+                    pass
+            return {"ok": True, "message": f"Connected to {me}. Emails will start syncing."}
+        except imaplib.IMAP4.error:
+            return {"ok": False, "message": "Google didn't accept that email and app password. Make sure it's an app password, not your normal password."}
+        except Exception as e:
+            return {"ok": False, "message": f"Couldn't reach Gmail: {e}"}
+    raise ValueError("unknown service")
+
+
+def sync_state(module, path=None, email=None):
+    env = user_env(path, email)
+    on = bool(env.get("TRELLUS_API_KEY") and env.get("TRELLUS_USER_EMAIL")) if module is trellus_sync \
+        else all(email_sync.config(env))
+    return {**module.status_for(email or _ctx.user), "enabled": on}
+
+
+# ---------- background syncs: every person with keys, every 5 minutes ----------
+def _log(msg):
+    print(f"[{datetime.now():%H:%M}] {msg}", flush=True)
+
+
+def sync_user(user, path):
+    env = user_env(path, None if user == "local" else user)
+    who = "" if user == "local" else f"{user} · "
+    for name, module, ready in (("Trellus", trellus_sync, env.get("TRELLUS_API_KEY") and env.get("TRELLUS_USER_EMAIL")),
+                                ("Email", email_sync, all(email_sync.config(env)))):
+        if not ready:
+            continue
+        try:
+            _log(f"{who}{name} sync: {module.sync_once(lambda: db(path), env, user)}")
+        except Exception as e:
+            _log(f"{who}{name} sync failed: {e}")
+
+
+def kick_sync(user, path):
+    threading.Thread(target=sync_user, args=(user, path), daemon=True).start()
+
+
+def scheduler():
+    while True:
+        for u in list_users():
+            sync_user(u["email"], u["path"])
+        time.sleep(SYNC_EVERY)
+
+
+# ---------- manager view ----------
+def team_overview(start, end):
+    out = []
+    for u in list_users():
+        _ctx.db_path = u["path"]
+        try:
+            st = get_stats(start, end)["totals"]
+            with db() as c:
+                stages = {r["stage"]: r["n"] for r in c.execute("SELECT stage, COUNT(*) AS n FROM accounts GROUP BY stage")}
+                open_tasks = c.execute("SELECT COUNT(*) FROM tasks WHERE done_at IS NULL").fetchone()[0]
+            env = user_env(u["path"], u["email"])
+            out.append({"email": u["email"], "last_seen": u["last_seen"], "totals": st, "stages": stages,
+                        "open_tasks": open_tasks,
+                        "trellus": bool(env.get("TRELLUS_API_KEY")), "email_sync": all(email_sync.config(env)),
+                        "sync_error": bool(trellus_sync.status_for(u["email"])["last_error"]
+                                           or email_sync.status_for(u["email"])["last_error"])})
+        finally:
+            _ctx.db_path = _ctx.me_path
+    return {"start": start, "end": end, "people": out}
+
+
 def export_csv():
     rows = list_accounts()
     buf = io.StringIO()
@@ -483,11 +750,61 @@ class Handler(BaseHTTPRequestHandler):
     def _parts(self):
         return [p for p in urlparse(self.path).path.split("/") if p]
 
+    def _identify(self, p, method):
+        """Work out who's asking and which database they get. Returns (code, message) to refuse, or None."""
+        _ctx.user = _ctx.db_path = _ctx.me_path = _ctx.viewing = None
+        _ctx.admin = False
+        if not HOSTED:
+            _ctx.user, _ctx.db_path, _ctx.me_path = "local", DB_PATH, DB_PATH
+        else:
+            got = (self.headers.get(SECRET_HEADER) or "").encode()
+            if not hmac.compare_digest(got, PROXY_SECRET.encode()):
+                return 401, "Open the tracker through the company platform."
+            email = (self.headers.get(USER_HEADER) or "").strip().lower()
+            if not EMAIL_RE.fullmatch(email):
+                return 401, "The platform didn't say who you are."
+            if DOMAINS and email.rsplit("@", 1)[1] not in DOMAINS:
+                return 403, "This tracker is only for company accounts."
+            _ctx.user, _ctx.admin = email, email in ADMINS
+            _ctx.db_path = _ctx.me_path = user_db_path(email, create=True)
+        # Managers can look at someone else's tracker, read-only: ?as=person@company.com
+        target = (parse_qs(urlparse(self.path).query).get("as") or [""])[0].strip().lower()
+        if target and p and p[0] == "api" and p[1:2] not in (["me"], ["settings"], ["team"]) and target != _ctx.user:
+            if not _ctx.admin:
+                return 403, "Only managers can view someone else's tracker."
+            if method != "GET":
+                return 403, "Read-only: you're viewing someone else's tracker."
+            path = user_db_path(target)
+            if not path:
+                return 404, "No tracker for that person."
+            _ctx.db_path, _ctx.viewing = path, target
+        return None
+
     def _route(self, method):
         p = self._parts()
+        if p == ["healthz"]:  # for the platform's uptime checks; reveals nothing
+            return self._send(200, "ok", "text/plain")
         try:
+            refused = self._identify(p, method)
+            if refused:
+                if p and p[0] == "api":
+                    return self._send(refused[0], {"error": refused[1]})
+                return self._send(refused[0], refused[1], "text/plain; charset=utf-8")
             if not p or p[0] != "api":
                 return self._static(method)
+            if p == ["api", "me"] and method == "GET":
+                return self._send(200, {"email": _ctx.user, "admin": _ctx.admin, "mode": MODE})
+            if p == ["api", "settings"] and method == "GET":
+                return self._send(200, public_settings())
+            if p == ["api", "settings", "test"] and method == "POST":
+                return self._send(200, test_connection(self._json()))
+            if p == ["api", "team"] and method == "GET":
+                if not _ctx.admin:
+                    return self._send(403, {"error": "managers only"})
+                q = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
+                start, end = q.get("from") or datetime.now().date().isoformat(), q.get("to") or datetime.now().date().isoformat()
+                datetime.fromisoformat(start); datetime.fromisoformat(end)
+                return self._send(200, team_overview(start, end))
             if p == ["api", "accounts"]:
                 if method == "GET":
                     return self._send(200, list_accounts())
@@ -528,7 +845,6 @@ class Handler(BaseHTTPRequestHandler):
                     delete_task(int(p[2]))
                     return self._send(200, {"ok": True})
             if p == ["api", "stats"] and method == "GET":
-                from urllib.parse import parse_qs
                 q = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
                 today = datetime.now().date().isoformat()
                 start = q.get("from") or first_activity_date()
@@ -543,24 +859,21 @@ class Handler(BaseHTTPRequestHandler):
                 body = self._json()
                 return self._send(200, set_order(body.get("key"), body.get("ids")))
             if p == ["api", "settings"] and method == "POST":
-                body = self._json()
-                if "dial_goal" in body:
-                    set_setting("dial_goal", max(0, int(body["dial_goal"] or 0)))
-                return self._send(200, {"ok": True})
+                return self._send(200, save_settings(self._json()))
             if p == ["api", "sync"] and method == "GET":
                 with db() as c:
                     n = c.execute("SELECT COUNT(*) FROM trellus_calls WHERE status='review'").fetchone()[0]
-                return self._send(200, {**trellus_sync.status, "review_count": n})
+                return self._send(200, {**sync_state(trellus_sync, email=_ctx.viewing or _ctx.user), "review_count": n})
             if p == ["api", "sync"] and method == "POST":
                 try:
-                    return self._send(200, trellus_sync.sync_once(db, ENV))
+                    return self._send(200, trellus_sync.sync_once(db, user_env(email=_ctx.user), _ctx.user))
                 except RuntimeError as e:
                     return self._send(502, {"error": str(e)})
             if p == ["api", "email-sync"] and method == "GET":
-                return self._send(200, email_sync.status)
+                return self._send(200, sync_state(email_sync, email=_ctx.viewing or _ctx.user))
             if p == ["api", "email-sync"] and method == "POST":
                 try:
-                    return self._send(200, email_sync.sync_once(db, ENV))
+                    return self._send(200, email_sync.sync_once(db, user_env(email=_ctx.user), _ctx.user))
                 except RuntimeError as e:
                     return self._send(502, {"error": str(e)})
             if p == ["api", "review"] and method == "GET":
@@ -571,7 +884,7 @@ class Handler(BaseHTTPRequestHandler):
                     if not c.execute("SELECT 1 FROM trellus_calls WHERE session_id=?", (p[2],)).fetchone():
                         return self._send(404, {"error": "call not found"})
                 try:
-                    return self._send(200, trellus_sync.call_detail(ENV, p[2]))
+                    return self._send(200, trellus_sync.call_detail(user_env(email=_ctx.viewing or _ctx.user), p[2]))
                 except RuntimeError as e:
                     return self._send(502, {"error": str(e)})
             if len(p) == 3 and p[1] == "review" and method == "POST":
@@ -621,14 +934,48 @@ class Handler(BaseHTTPRequestHandler):
         self._route("DELETE")
 
 
+def import_db(src, email):
+    """Copy an existing pipeline.db into someone's account on the shared server (replaces what's there)."""
+    email = email.strip().lower()
+    if not EMAIL_RE.fullmatch(email):
+        sys.exit(f"'{email}' isn't an email address")
+    dest = user_db_path(email, create=True)
+    with sqlite3.connect(f"file:{Path(src).resolve()}?mode=ro", uri=True) as a, sqlite3.connect(dest) as b:
+        a.backup(b)
+    _ready.discard(str(dest))
+    ensure_db(dest)  # adds any newer tables
+    with db(dest) as c:  # keys and sync bookmarks stay with the old copy; they enter their keys again in Settings
+        c.execute("""DELETE FROM settings WHERE key IN ('trellus_api_key', 'google_app_password', 'trellus_user_id',
+                     'email_last_uid', 'email_uidvalidity')""")
+        n = c.execute("SELECT COUNT(*) FROM accounts").fetchone()[0]
+    print(f"Imported {n} agencies into {email}'s tracker ({dest.name}).")
+
+
 if __name__ == "__main__":
-    init_db()
-    srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    if len(sys.argv) == 4 and sys.argv[1] == "import":
+        if not HOSTED:
+            sys.exit("Run the import on the shared server (AUTH_MODE=header), e.g.\n"
+                     "  AUTH_MODE=header DATA_DIR=/data python3 server.py import pipeline.db you@company.com")
+        import_db(sys.argv[2], sys.argv[3])
+        sys.exit(0)
+    if HOSTED:
+        if len(PROXY_SECRET) < 16:
+            sys.exit("AUTH_MODE=header needs PROXY_SECRET (16+ random characters) so only the platform can reach the "
+                     "tracker. See DEPLOY.md.")
+        registry().close()
+        where = f"Data folder: {DATA_DIR}  (one database per person)\nManagers: {', '.join(sorted(ADMINS)) or 'none'}"
+    else:
+        ensure_db(DB_PATH)
+        where = f"Data file: {DB_PATH}"
+    srv = ThreadingHTTPServer((HOST, PORT), Handler)
     url = f"http://localhost:{PORT}"
-    print(f"Pipeline Tracker running at {url}  (Ctrl+C to stop)\nData file: {DB_PATH}", flush=True)
-    trellus_sync.start_loop(db, ENV, log=lambda m: print(m, flush=True))
-    email_sync.start_loop(db, ENV, log=lambda m: print(m, flush=True))
-    if "--no-browser" not in sys.argv:
+    print(f"Pipeline Tracker running at {url}  ({'hosted, sign-in via platform' if HOSTED else 'local'}; Ctrl+C to stop)\n{where}", flush=True)
+    if not HOSTED:
+        env = user_env(DB_PATH)
+        print("Trellus sync " + ("on (every 5 min)" if env.get("TRELLUS_API_KEY") else "off (add keys in Settings)"), flush=True)
+        print("Email sync " + ("on (every 5 min)" if all(email_sync.config(env)) else "off (add keys in Settings)"), flush=True)
+    threading.Thread(target=scheduler, daemon=True, name="sync").start()
+    if not HOSTED and "--no-browser" not in sys.argv:
         webbrowser.open(url)
     try:
         srv.serve_forever()

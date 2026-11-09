@@ -1,0 +1,9 @@
+.env
+.env.*
+*.db
+backups/
+data/
+*.log
+.tracker.pid
+__pycache__/
+.git/

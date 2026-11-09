@@ -250,6 +250,31 @@ table.daily .z { color: var(--muted); opacity: .5; }
 .sync { font-size: 11px; color: var(--muted); white-space: nowrap; }
 .sync.err { color: var(--danger); font-weight: 600; }
 
+/* ---------- Settings, team view, read-only viewing ---------- */
+.set-sec { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; }
+.set-sec h4 { margin: 0 0 2px; font-size: 14px; display: flex; align-items: center; gap: 8px; }
+.set-sec .sub { color: var(--muted); font-size: 12px; margin-bottom: 10px; }
+.set-sec .grid2 { gap: 8px 12px; }
+.set-sec .row2 { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+.set-sec ol { margin: 6px 0 0 18px; padding: 0; color: var(--muted); font-size: 12px; }
+.set-sec ol a { color: var(--accent-text); }
+.pillok { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 9px; background: var(--ok-soft); color: var(--ok); }
+.pilloff { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 9px; background: var(--bg); color: var(--muted); border: 1px solid var(--line); }
+.test-msg { font-size: 12px; }
+.test-msg.ok { color: var(--ok); } .test-msg.bad { color: var(--danger); }
+.me-chip { font-size: 12px; color: var(--muted); white-space: nowrap; }
+#setBtn.needs::after { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); margin-left: 6px; vertical-align: 1px; }
+.viewbar { background: var(--ink); color: var(--panel); padding: 8px 20px; display: flex; gap: 12px; align-items: center; font-size: 13px; position: sticky; top: 0; z-index: 11; }
+.viewbar b { color: var(--accent-hover); }
+.viewbar[hidden], .me-chip[hidden] { display: none; }
+.viewbar .btn { background: transparent; color: inherit; border-color: color-mix(in srgb, var(--panel) 40%, transparent); }
+body.readonly #newBtn, body.readonly #drawer .d-foot, body.readonly .logbox, body.readonly #todoAdd, body.readonly .timeline .t button,
+body.readonly .todo .acts button, body.readonly .review .acts, body.readonly #todoList input[type=checkbox], body.readonly .todo-chk,
+body.readonly #syncBtn, body.readonly #mailBtn, body.readonly #fixBtn { display: none !important; }
+table.team td, table.team th { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+table.team td:first-child, table.team th:first-child { text-align: left; }
+table.team tr.total td { font-weight: 650; background: var(--bg); }
+table.team .who b { display: block; }
 /* ---------- Corgi brand touches ---------- */
 header { border-bottom: 1px solid var(--line); }
 header h1 { display: flex; align-items: center; gap: 8px; font-weight: 700; letter-spacing: -.02em; }
@@ -289,6 +314,7 @@ a.btn:hover { color: var(--accent-text); }
     <button data-v="board">Board</button>
     <button data-v="list">List</button>
     <button data-v="stats">Stats</button>
+    <button data-v="team" id="teamTab" hidden>Team</button>
   </div>
   <label class="counter" title="Today's dials. Type the number and press Enter">
     <span class="lbl">Dials</span><span class="goalbar" id="goalbar" hidden><i></i></span>
@@ -304,9 +330,12 @@ a.btn:hover { color: var(--accent-text); }
   <div class="spacer"></div>
   <input type="search" id="q" placeholder="Search agency, contact, email…  ( / )">
   <label class="hint"><input type="checkbox" id="showLost"> Show lost</label>
-  <a class="btn" href="/api/export.csv">Export CSV</a>
+  <a class="btn" id="csvLink" href="/api/export.csv">Export CSV</a>
+  <span class="me-chip" id="meChip" hidden></span>
+  <button class="btn" id="setBtn" title="Connect Trellus and your email">⚙ Settings</button>
   <button class="btn primary" id="newBtn">+ New lead <span class="hint" style="color:#fff;opacity:.7">(N)</span></button>
 </header>
+<div class="viewbar" id="viewBar" hidden><span>Viewing <b id="viewWho"></b>'s tracker · read-only</span><span class="spacer"></span><button class="btn sm" id="viewBack">Back to my tracker</button></div>
 
 <main>
   <div class="stats" id="stats"></div>
@@ -323,6 +352,12 @@ a.btn:hover { color: var(--accent-text); }
 <div class="modal" id="todoModal" role="dialog" aria-modal="true" aria-labelledby="mTitle">
   <div class="d-head"><h2 id="mTitle">To-dos</h2><button class="btn sm" id="mClose">Close (Esc)</button></div>
   <div class="m-body"><div class="todo-list" id="todoList"></div><div id="todoAdd" style="margin-top:10px"></div></div>
+</div>
+<div class="m-scrim" id="setScrim"></div>
+<div class="modal" id="setModal" role="dialog" aria-modal="true" aria-labelledby="setTitle">
+  <div class="d-head"><h2 id="setTitle">Settings</h2><button class="btn sm" id="setClose">Close (Esc)</button></div>
+  <div class="m-body" id="setBody"><div class="hint">Loading…</div></div>
+  <div class="d-foot"><span class="hint" id="setNote">Only you can see these. Saved keys are never shown again, not even to you.</span><span class="spacer"></span><button class="btn primary" id="setSave">Save</button></div>
 </div>
 <div class="toast" id="toast"></div>
 
@@ -535,7 +570,13 @@ let drawerPreview = null;
 setInterval(() => { if ($("#drawer").classList.contains("on")) drawerPreview?.(); }, 30 * 1000);
 
 // ---------- api ----------
+let me = { email: "local", admin: false, mode: "local" }, viewingAs = null;
+const OWN_ONLY = /^\/(me|settings|team)\b/;
 async function api(path, opts = {}) {
+  if (viewingAs && !OWN_ONLY.test(path)) {
+    if ((opts.method || "GET").toUpperCase() !== "GET") throw new Error(`Read-only: you're viewing ${viewingAs}'s tracker`);
+    path += (path.includes("?") ? "&" : "?") + "as=" + encodeURIComponent(viewingAs);
+  }
   const r = await fetch("/api" + path, { headers: { "Content-Type": "application/json" }, ...opts, body: opts.body ? JSON.stringify(opts.body) : undefined });
   const j = await r.json();
   if (!r.ok) throw new Error(j.error || r.statusText);
@@ -606,6 +647,7 @@ function render() {
   if (view === "board") renderBoard();
   else if (view === "list") renderList();
   else if (view === "stats") renderPerformance();
+  else if (view === "team" && me.admin) renderTeam();
   else renderToday(att);
 }
 
@@ -1271,6 +1313,7 @@ function openDrawer(id) {
   $("#todoBtn").onclick = openTodos;
   $("#mTitle").textContent = isNew ? "To-dos" : `To-dos · ${current.agency}`;
   if (!isNew) { $("#todoList").innerHTML = `<div class="hint">Loading…</div>`; $("#todoAdd").innerHTML = ""; paintTodoBtn(tasks.filter(t => t.account_id === current.id)); }
+  if (viewingAs) $("#dBody").querySelectorAll("input, select, textarea").forEach(el => el.disabled = true);
   $("#scrim").classList.add("on"); $("#drawer").classList.add("on");
   setTimeout(() => (isNew ? $("#form").agency : null)?.focus(), 50);
 }
@@ -1481,6 +1524,7 @@ $("#mScrim").onclick = closeTodos;
 $("#scrim").onclick = closeDrawer;
 document.addEventListener("keydown", e => {
   const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
+  if (e.key === "Escape" && $("#setModal").classList.contains("on")) { e.preventDefault(); closeSettings(); return; }
   if (e.key === "Escape") { if (todosOpen()) { e.preventDefault(); closeTodos(); return; } if ($("#drawer").classList.contains("on")) closeDrawer(); else if (typing) document.activeElement.blur(); }
   if (typing || e.metaKey || e.ctrlKey) return;
   if (e.key === "n") { e.preventDefault(); openDrawer(null); }
@@ -1488,14 +1532,146 @@ document.addEventListener("keydown", e => {
   if (e.key === "/") { e.preventDefault(); $("#q").focus(); }
   if (e.key.toLowerCase() === "d") { e.preventDefault(); $("#dialIn").focus(); }
   if (e.key.toLowerCase() === "c") { e.preventDefault(); $("#connIn").focus(); }
-  const views = { 1: "today", 2: "board", 3: "list", 4: "stats" };
+  if (e.key === ",") { e.preventDefault(); openSettings(); return; }
+  const views = { 1: "today", 2: "board", 3: "list", 4: "stats", ...(me.admin ? { 5: "team" } : {}) };
   if (views[e.key]) { view = views[e.key]; localSet("view", view); render(); }
 });
 // refresh "today" math (and the dial counter after midnight) if the tab is left open
 setInterval(() => { loadToday(); render(); }, 5 * 60 * 1000);
 let resizeT; window.addEventListener("resize", () => { clearTimeout(resizeT); resizeT = setTimeout(() => view === "stats" && renderPerformance(), 200); });
 setInterval(() => { loadSync(); loadMail(); loadToday(); }, 60 * 1000);
-load(); loadToday(); loadSync(); loadMail();
+// ---------- who am I ----------
+async function loadMe() {
+  me = await api("/me").catch(() => me);
+  $("#teamTab").hidden = !me.admin;
+  $("#meChip").hidden = me.mode !== "header";
+  $("#meChip").textContent = me.email;
+  if (view === "team" && !me.admin) { view = "today"; }
+  checkSetup();
+}
+async function checkSetup() {
+  const s = await api("/settings").catch(() => null);
+  if (!s) return;
+  const missing = !s.trellus_api_key.set || !s.google_app_password.set;
+  $("#setBtn").classList.toggle("needs", missing);
+  $("#setBtn").title = missing ? "Connect Trellus and your email so calls and emails log themselves" : "Settings";
+  // First visit: open Settings once so people know where to connect things.
+  if (missing && !localGet("setupSeen") && !viewingAs) { localSet("setupSeen", "1"); openSettings(); }
+}
+
+// ---------- Settings ----------
+let setData = null;
+const setOpen = () => $("#setModal").classList.contains("on");
+function closeSettings() { $("#setScrim").classList.remove("on"); $("#setModal").classList.remove("on"); }
+async function openSettings() {
+  $("#setScrim").classList.add("on"); $("#setModal").classList.add("on");
+  $("#setBody").innerHTML = `<div class="hint">Loading…</div>`;
+  try { setData = await api("/settings"); } catch (e) { $("#setBody").innerHTML = `<div class="hint">${esc(e.message)}</div>`; return; }
+  paintSettings();
+}
+function secretPh(x, empty) {
+  if (!x.set) return empty;
+  return x.source === "env" ? "Using the key in your .env file. Paste a new one to replace it" : `Saved${x.hint ? " (" + x.hint + ")" : ""}. Leave blank to keep it`;
+}
+function paintSettings() {
+  const s = setData, tk = s.trellus_api_key, gp = s.google_app_password;
+  const badge = ok => ok ? `<span class="pillok">Connected</span>` : `<span class="pilloff">Not set up</span>`;
+  $("#setBody").innerHTML = `
+    <div class="set-sec" data-svc="trellus">
+      <h4>📞 Trellus (calls) ${badge(tk.set && s.trellus_user_email)}</h4>
+      <div class="sub">Logs your calls on agency cards and fills in Dials and Connects for you.</div>
+      <div class="grid2">
+        <div class="field"><label>Trellus login email</label><input name="trellus_user_email" type="email" value="${esc(s.trellus_user_email)}" ${s.trellus_email_locked ? "disabled title='On the shared tracker this is always your own email'" : ""} placeholder="you@company.com"></div>
+        <div class="field"><label>Trellus API key</label><input name="trellus_api_key" type="password" autocomplete="off" placeholder="${esc(secretPh(tk, "Paste your Trellus API key"))}"></div>
+      </div>
+      <ol><li>Ask your team lead or Trellus admin for your Trellus API key.</li><li>Paste it above, click <b>Test</b>, then <b>Save</b>.</li></ol>
+      <div class="row2"><button class="btn sm" data-test="trellus">Test</button><span class="test-msg"></span><span class="spacer"></span>${tk.source === "settings" ? `<button class="btn sm danger" data-clear="trellus_api_key">Remove key</button>` : ""}</div>
+    </div>
+    <div class="set-sec" data-svc="email">
+      <h4>✉️ Work email ${badge(gp.set && s.email_address)}</h4>
+      <div class="sub">Logs emails with your agencies, and moves cards to Info Sent / Submission In / Quoted when the email shows it. Read-only: it never sends, deletes or marks anything read.</div>
+      <div class="grid2">
+        <div class="field"><label>Work email (Gmail / Google Workspace)</label><input name="email_address" type="email" value="${esc(s.email_address)}" placeholder="you@company.com"></div>
+        <div class="field"><label>Google app password</label><input name="google_app_password" type="password" autocomplete="off" placeholder="${esc(secretPh(gp, "16 letters, e.g. abcd efgh ijkl mnop"))}"></div>
+      </div>
+      <ol>
+        <li>Open <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">Google app passwords ↗</a> and sign in with your <b>work</b> account.</li>
+        <li>Type a name like <i>Pipeline Tracker</i> and click <b>Create</b>.</li>
+        <li>Copy the 16-letter password Google shows you, paste it above, click <b>Test</b>, then <b>Save</b>.</li>
+        <li>If Google says app passwords aren't available, turn on 2-Step Verification first, or ask IT.</li>
+      </ol>
+      <div class="row2"><button class="btn sm" data-test="email">Test</button><span class="test-msg"></span><span class="spacer"></span>${gp.source === "settings" ? `<button class="btn sm danger" data-clear="google_app_password">Remove password</button>` : ""}</div>
+    </div>`;
+  const val = n => $(`#setBody [name=${n}]`).value.trim();
+  $("#setBody").querySelectorAll("[data-test]").forEach(b => b.onclick = async () => {
+    const msg = b.parentElement.querySelector(".test-msg");
+    msg.className = "test-msg"; msg.textContent = "Testing…"; b.disabled = true;
+    try {
+      const r = await api("/settings/test", { method: "POST", body: { service: b.dataset.test, trellus_api_key: val("trellus_api_key"), trellus_user_email: val("trellus_user_email"), email_address: val("email_address"), google_app_password: val("google_app_password") } });
+      msg.className = "test-msg " + (r.ok ? "ok" : "bad"); msg.textContent = (r.ok ? "✓ " : "✗ ") + r.message;
+    } catch (e) { msg.className = "test-msg bad"; msg.textContent = e.message; }
+    b.disabled = false;
+  });
+  $("#setBody").querySelectorAll("[data-clear]").forEach(b => b.onclick = () => saveSettings({ clear: [b.dataset.clear] }, "Removed"));
+  $("#setBody").querySelectorAll("input").forEach(i => i.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); saveSettings(); } });
+}
+async function saveSettings(extra, msg) {
+  const body = extra || {};
+  if (!extra) for (const n of ["trellus_user_email", "trellus_api_key", "email_address", "google_app_password"]) {
+    const el = $(`#setBody [name=${n}]`); if (!el || el.disabled) continue;
+    if (el.type !== "password" || el.value.trim()) body[n] = el.value.trim();
+  }
+  try {
+    setData = await api("/settings", { method: "POST", body });
+    paintSettings(); checkSetup();
+    toast(msg || "Saved. Syncing now…");
+    setTimeout(() => { loadSync(); loadMail(); }, 1500);
+  } catch (e) { toast(e.message); }
+}
+$("#setBtn").onclick = openSettings;
+$("#setClose").onclick = closeSettings;
+$("#setScrim").onclick = closeSettings;
+$("#setSave").onclick = () => saveSettings();
+
+// ---------- Team (managers) ----------
+let teamRange = localGet("teamRange") || "week";
+async function renderTeam() {
+  const [a, b] = rangeDates(teamRange).map(ymd);
+  $("#view").innerHTML = `<div class="toolbar"><select id="teamRangeSel">${RANGES.filter(([k]) => k !== "all").map(([k, l]) => `<option value="${k}" ${k === teamRange ? "selected" : ""}>${l}</option>`).join("")}</select>
+    <span class="hint">${fmtDate(a)} – ${fmtDate(b)} · everyone on the tracker. Click a person to see their pipeline (read-only).</span></div><div class="hint">Loading…</div>`;
+  $("#teamRangeSel").onchange = e => { teamRange = e.target.value; localSet("teamRange", teamRange); renderTeam(); };
+  let d;
+  try { d = await api(`/team?from=${a}&to=${b}`); } catch (e) { $("#view").lastElementChild.textContent = e.message; return; }
+  if (view !== "team") return;
+  const cols = [["dials", "Dials"], ["connects", "Connects"], ["lead", "Interested"], ["info_sent", "Info sent"], ["submission", "Submissions"], ["quoted", "Quoted"], ["active", "Appointed"], ["bound_premium", "Bound premium"]];
+  const sum = k => d.people.reduce((n, p) => n + (p.totals[k] || 0), 0);
+  const pct = (x, y) => y ? Math.round(100 * x / y) + "%" : "—";
+  const openDeals = p => ["lead", "info_sent", "submission", "quoted"].reduce((n, k) => n + (p.stages[k] || 0), 0);
+  const cell = (k, v) => k === "bound_premium" ? (v ? money(v) : '<span class="hint">—</span>') : (v || '<span class="hint">0</span>');
+  $("#view").lastElementChild.outerHTML = `<table class="team"><thead><tr><th>Person</th>${cols.map(([, l]) => `<th>${l}</th>`).join("")}<th>Connect %</th><th>Open deals</th><th>Open to-dos</th><th>Syncs</th></tr></thead><tbody>
+    ${d.people.map(p => `<tr class="row" data-as="${esc(p.email)}">
+      <td class="who"><b>${esc(p.email)}${p.email === me.email ? " (you)" : ""}</b><span class="hint">${p.last_seen ? "Last on " + fmtDateTime(p.last_seen) : ""}</span></td>
+      ${cols.map(([k]) => `<td>${cell(k, p.totals[k])}</td>`).join("")}
+      <td>${pct(p.totals.connects, p.totals.dials)}</td><td>${openDeals(p)}</td><td>${p.open_tasks || '<span class="hint">0</span>'}</td>
+      <td>${p.trellus ? "📞" : '<span class="hint" title="Trellus not connected">📞✗</span>'} ${p.email_sync ? "✉️" : '<span class="hint" title="Email not connected">✉️✗</span>'}${p.sync_error ? ' <span class="tag over" title="Last sync failed">⚠</span>' : ""}</td></tr>`).join("") || `<tr><td colspan="13" class="empty">Nobody has opened the tracker yet.</td></tr>`}
+    ${d.people.length > 1 ? `<tr class="total"><td>Team</td>${cols.map(([k]) => `<td>${cell(k, sum(k))}</td>`).join("")}<td>${pct(sum("connects"), sum("dials"))}</td><td>${d.people.reduce((n, p) => n + openDeals(p), 0)}</td><td>${d.people.reduce((n, p) => n + p.open_tasks, 0)}</td><td></td></tr>` : ""}
+    </tbody></table>`;
+  document.querySelectorAll("tr[data-as]").forEach(tr => tr.onclick = () => viewAs(tr.dataset.as === me.email ? null : tr.dataset.as));
+}
+async function viewAs(email) {
+  viewingAs = email;
+  document.body.classList.toggle("readonly", !!email);
+  $("#viewBar").hidden = !email; $("#viewWho").textContent = email || "";
+  $("#csvLink").href = "/api/export.csv" + (email ? "?as=" + encodeURIComponent(email) : "");
+  document.querySelectorAll(".counter input").forEach(i => i.disabled = !!email);
+  closeDrawer();
+  view = email ? "board" : "team"; localSet("view", view);
+  await Promise.all([load(), loadToday(), loadSync(), loadMail()]);
+}
+$("#viewBack").onclick = () => viewAs(null);
+window.addEventListener("unhandledrejection", e => { if (e.reason?.message) toast(e.reason.message); });
+
+loadMe().then(() => { load(); loadToday(); loadSync(); loadMail(); });
 </script>
 </body>
 </html>

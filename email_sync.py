@@ -42,8 +42,15 @@ QUOTE_SENT = re.compile(
 COLLATERAL = re.compile(r"appetite|guide|brochure|flyer|overview|one.?pager|deck|w-?9|licen[cs]e|agreement|contract|"
                         r"application|acord|signature|logo|newsletter", re.I)
 
-_lock = threading.Lock()
-status = {"enabled": False, "last_sync": None, "last_error": None, "running": False}
+# One status + lock per user, so a team's syncs never mix. "local" is the single-user Mac setup.
+_locks, _statuses = {}, {}
+
+
+def status_for(user="local"):
+    return _statuses.setdefault(user, {"enabled": False, "last_sync": None, "last_error": None, "running": False})
+
+
+status = status_for("local")  # kept for scripts that read it directly
 
 
 # ---------- schema ----------
@@ -248,11 +255,12 @@ def _fetch(M, uids, what):
     return out
 
 
-def sync_once(db, env):
+def sync_once(db, env, user="local"):
     me, pw = config(env)
     if not me or not pw:
-        raise RuntimeError("Set EMAIL_APP_PASSWORD (and EMAIL_ADDRESS if it isn't your Trellus email) in .env")
-    if not _lock.acquire(blocking=False):
+        raise RuntimeError("Add your work email and Google app password in Settings")
+    status, lock = status_for(user), _locks.setdefault(user, threading.Lock())
+    if not lock.acquire(blocking=False):
         return {"skipped": "a sync is already running"}
     status["running"] = True
     try:
@@ -261,7 +269,7 @@ def sync_once(db, env):
             try:
                 M.login(me, pw)
             except imaplib.IMAP4.error as e:
-                raise RuntimeError(f"Email login failed for {me}: {e}. Check EMAIL_APP_PASSWORD in .env.")
+                raise RuntimeError(f"Email login failed for {me}: {e}. Check the Google app password in Settings.")
             M.select(_all_mail(M), readonly=True)
             validity = M.response("UIDVALIDITY")[1][0].decode()
             with db() as c:
@@ -323,23 +331,6 @@ def sync_once(db, env):
         raise
     finally:
         status["running"] = False
-        _lock.release()
+        lock.release()
 
 
-def start_loop(db, env, log=print):
-    if not config(env)[1]:
-        log("Email sync off (no GOOGLE_APP_PASSWORD in .env)")
-        return
-    status["enabled"] = True
-
-    def loop():
-        while True:
-            try:
-                r = sync_once(db, env)
-                log(f"[{datetime.now():%H:%M}] Email sync: {r}")
-            except Exception as e:
-                log(f"[{datetime.now():%H:%M}] Email sync failed: {e}")
-            time.sleep(INTERVAL)
-
-    threading.Thread(target=loop, daemon=True, name="email-sync").start()
-    log("Email sync on (every 5 min)")
